@@ -16,4 +16,4 @@ spec:
       - name: dev-container
         image: <todo>
         ports:
-        - containerPort: 8080
+        - containerPort: 8081

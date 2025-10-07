@@ -1,26 +1,42 @@
-# Copyright 2023 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# ==============================
+# 🔨 STAGE 1 — Build
+# ==============================
+FROM golang:1.22-alpine AS builder
 
-FROM golang:1.19.2 as builder
+# Labels pour traçabilité
+LABEL maintainer="Laurent MAVOUNGOU <dev@yourdomain.com>"
+LABEL description="Go Dev Dashboard - outil de monitoring et sécurité pour développeurs freelances"
+
 WORKDIR /app
-RUN go mod init hello-app
-COPY *.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o /hello-app
 
+# Copie des fichiers sources et initialisation du module
+COPY go.mod go.sum* . 2>/dev/null || true
+RUN go mod init go-dev-dashboard || true
+RUN go mod tidy
+
+COPY . .
+
+# Compilation statique (sécurisée et portable)
+RUN CGO_ENABLED=0 GOOS=linux go build -a -o /go-dev-dashboard .
+
+# ==============================
+# 🧊 STAGE 2 — Final image
+# ==============================
 FROM gcr.io/distroless/base-debian11
+
 WORKDIR /
-COPY --from=builder /hello-app /hello-app
-ENV PORT 8090
+
+# Copie du binaire depuis le builder
+COPY --from=builder /go-dev-dashboard /go-dev-dashboard
+
+# Port d’écoute de l’application
+ENV PORT=8090
+
+# Utilisateur non-root pour sécurité
 USER nonroot:nonroot
-CMD ["/hello-app"]
+
+# Exposition du port (facilite debug Docker)
+EXPOSE 8090
+
+# Commande de démarrage
+ENTRYPOINT ["/go-dev-dashboard"]

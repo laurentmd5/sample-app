@@ -1,24 +1,10 @@
 pipeline {
-    agent any
-    
-    environment {
-        APP_NAME = 'hello-app'
-        APP_PORT = '8090'
-        DOCKER_REGISTRY = 'laurentmd5'
-        DEPLOY_SERVER = 'devops@localhost'
-        SSH_CREDENTIALS_ID = 'ubuntu-server-ssh'
-        TRIVY_VERSION = '0.49.1'
-        GOSEC_VERSION = '2.19.0'
-        ZAP_VERSION = '2.14.0'
-        TARGET_URL = "http://192.168.61.131:8090"
-        GIT_TERMINAL_PROMPT = '0'
-    }
-    
-    stages {
-        stage('Checkout Code') {
-            steps {
-                git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token2')
-                sh '''
+  agent any
+  stages {
+    stage('Checkout Code') {
+      steps {
+        git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token2')
+        sh '''
                 echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
                 echo "📝 Branch: master"
                 echo "🔍 Files in repository:"
@@ -26,12 +12,12 @@ pipeline {
                 echo "=== Go files ==="
                 find . -name "*.go" -type f
                 '''
-            }
-        }
-        
-        stage('Setup Environment') {
-            steps {
-                sh '''
+      }
+    }
+
+    stage('Setup Environment') {
+      steps {
+        sh '''
                 echo "🔧 Configuration de l environnement..."
                 echo "=== Versions des outils ==="
                 go version || echo "Go non installé"
@@ -65,12 +51,12 @@ pipeline {
                 
                 echo "✅ Tous les outils sont prêts"
                 '''
-            }
-        }
-        
-        stage('Build Go Application') {
-            steps {
-                sh '''
+      }
+    }
+
+    stage('Build Go Application') {
+      steps {
+        sh '''
                 echo "🏗️ Construction de l application Go..."
                 
                 export GOPRIVATE=""
@@ -97,12 +83,19 @@ pipeline {
                 
                 echo "🎯 Build Go terminé avec succès"
                 '''
-            }
+      }
+    }
+
+    stage('Static Code Analysis') {
+      post {
+        always {
+          publishHTML(allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true, reportDir: 'security-reports', reportFiles: 'gosec-report.html', reportName: 'Rapport Gosec - Analyse Statique')
+          archiveArtifacts(artifacts: 'security-reports/gosec-report.*,security-reports/govet-output.txt', fingerprint: true)
         }
-        
-        stage('Static Code Analysis') {
-            steps {
-                sh '''
+
+      }
+      steps {
+        sh '''
                 echo "🔍 Analyse Statique du Code avec gosec..."
                 mkdir -p security-reports
                 
@@ -120,25 +113,19 @@ pipeline {
                 echo "=== Exécution de go vet ==="
                 go vet ./... 2>&1 | tee security-reports/govet-output.txt || echo "Go vet terminé"
                 '''
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'security-reports',
-                        reportFiles: 'gosec-report.html',
-                        reportName: 'Rapport Gosec - Analyse Statique'
-                    ])
-                    archiveArtifacts artifacts: 'security-reports/gosec-report.*,security-reports/govet-output.txt', fingerprint: true
-                }
-            }
+      }
+    }
+
+    stage('Dynamic Tests') {
+      post {
+        always {
+          publishHTML(allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true, reportDir: 'test-reports', reportFiles: 'coverage.html', reportName: 'Rapport de Couverture des Tests')
+          archiveArtifacts(artifacts: 'test-reports/**/*', fingerprint: true)
         }
-        
-        stage('Dynamic Tests') {
-            steps {
-                sh '''
+
+      }
+      steps {
+        sh '''
                 echo "🧪 Tests Dynamiques et Couverture..."
                 mkdir -p test-reports
                 
@@ -157,44 +144,39 @@ pipeline {
                 echo "=== Résumé de Couverture ==="
                 [ -f "test-reports/coverage-summary.txt" ] && cat test-reports/coverage-summary.txt | grep total || echo "Aucune donnée de couverture"
                 '''
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'test-reports',
-                        reportFiles: 'coverage.html',
-                        reportName: 'Rapport de Couverture des Tests'
-                    ])
-                    archiveArtifacts artifacts: 'test-reports/**/*', fingerprint: true
-                }
-            }
+      }
+    }
+
+    stage('Build Docker Image') {
+      steps {
+        script {
+          sh """
+          echo "🐳 Construction de l Image Docker..."
+
+          echo "=== Vérification du Dockerfile ==="
+          [ -f "Dockerfile" ] && cat Dockerfile || echo "Dockerfile non trouvé"
+
+          docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} . || exit 1
+          docker tag ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} ${DOCKER_REGISTRY}/${APP_NAME}:latest
+
+          echo "✅ Images Docker créées:"
+          docker images | grep ${DOCKER_REGISTRY} || echo "Aucune image trouvée pour ${DOCKER_REGISTRY}"
+          """
         }
-        
-        stage('Build Docker Image') {
-            steps {
-                script {
-                    sh """
-                    echo "🐳 Construction de l Image Docker..."
-                    
-                    echo "=== Vérification du Dockerfile ==="
-                    [ -f "Dockerfile" ] && cat Dockerfile || echo "Dockerfile non trouvé"
-                    
-                    docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} . || exit 1
-                    docker tag ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} ${DOCKER_REGISTRY}/${APP_NAME}:latest
-                    
-                    echo "✅ Images Docker créées:"
-                    docker images | grep ${DOCKER_REGISTRY} || echo "Aucune image trouvée pour ${DOCKER_REGISTRY}"
-                    """
-                }
-            }
+
+      }
+    }
+
+    stage('Container Scan') {
+      post {
+        always {
+          publishHTML(allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true, reportDir: 'trivy-reports', reportFiles: 'container-scan.html', reportName: 'Scan Sécurité Container - Trivy')
+          archiveArtifacts(artifacts: 'trivy-reports/container-scan.*', fingerprint: true)
         }
-        
-        stage('Container Scan') {
-            steps {
-                sh '''
+
+      }
+      steps {
+        sh '''
                 echo "🔒 Scan de Vulnérabilités du Container avec Trivy..."
                 mkdir -p trivy-reports
                 
@@ -205,63 +187,58 @@ pipeline {
                 
                 echo "✅ Scan du container terminé"
                 '''
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'trivy-reports',
-                        reportFiles: 'container-scan.html',
-                        reportName: 'Scan Sécurité Container - Trivy'
-                    ])
-                    archiveArtifacts artifacts: 'trivy-reports/container-scan.*', fingerprint: true
-                }
-            }
+      }
+    }
+
+    stage('Deploy to Ubuntu') {
+      steps {
+        script {
+          withCredentials([sshUserPrivateKey(
+            credentialsId: "${SSH_CREDENTIALS_ID}",
+            usernameVariable: 'SSH_USER',
+            keyFileVariable: 'SSH_KEY'
+          )]) {
+            sh """
+            echo "🚀 Déploiement sur le serveur Ubuntu..."
+
+            ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+            set -e
+            echo '🎯 Démarrage du déploiement...'
+
+            docker stop ${APP_NAME} 2>/dev/null || true
+            docker rm ${APP_NAME} 2>/dev/null || true
+
+            docker pull ${DOCKER_REGISTRY}/${APP_NAME}:latest || echo "Utilisation de l image locale"
+
+            docker run -d \\
+            --name ${APP_NAME} \\
+            -p ${APP_PORT}:${APP_PORT} \\
+            --restart unless-stopped \\
+            ${DOCKER_REGISTRY}/${APP_NAME}:latest
+
+            sleep 10
+
+            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+
+            echo '✅ Déploiement terminé avec succès'
+            " || echo "SSH connection échouée"
+            """
+          }
         }
-        
-        stage('Deploy to Ubuntu') {
-            steps {
-                script {
-                    withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
-                        usernameVariable: 'SSH_USER',
-                        keyFileVariable: 'SSH_KEY'
-                    )]) {
-                        sh """
-                        echo "🚀 Déploiement sur le serveur Ubuntu..."
-                        
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
-                            set -e
-                            echo '🎯 Démarrage du déploiement...'
-                            
-                            docker stop ${APP_NAME} 2>/dev/null || true
-                            docker rm ${APP_NAME} 2>/dev/null || true
-                            
-                            docker pull ${DOCKER_REGISTRY}/${APP_NAME}:latest || echo "Utilisation de l image locale"
-                            
-                            docker run -d \\
-                              --name ${APP_NAME} \\
-                              -p ${APP_PORT}:${APP_PORT} \\
-                              --restart unless-stopped \\
-                              ${DOCKER_REGISTRY}/${APP_NAME}:latest
-                            
-                            sleep 10
-                            
-                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
-                            
-                            echo '✅ Déploiement terminé avec succès'
-                        " || echo "SSH connection échouée"
-                        """
-                    }
-                }
-            }
+
+      }
+    }
+
+    stage('Security Summary') {
+      post {
+        always {
+          publishHTML(allowMissing: true, alwaysLinkToLastBuild: true, keepAll: true, reportDir: 'security-reports', reportFiles: 'security-summary.html', reportName: 'Résumé Sécurité Complet')
+          archiveArtifacts(artifacts: 'security-summary.md,security-reports/security-summary.html', fingerprint: true)
         }
-        
-        stage('Security Summary') {
-            steps {
-                sh '''
+
+      }
+      steps {
+        sh '''
                 echo "📊 Génération du Rapport de Sécurité Consolidé..."
 
                 cat > security-summary.md << EOF
@@ -291,58 +268,58 @@ pipeline {
 
                 echo "✅ Rapport de sécurité généré"
                 '''
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'security-reports',
-                        reportFiles: 'security-summary.html',
-                        reportName: 'Résumé Sécurité Complet'
-                    ])
-                    archiveArtifacts artifacts: 'security-summary.md,security-reports/security-summary.html', fingerprint: true
-                }
-            }
-        }
-        
-        stage('Final Check') {
-            steps {
-                script {
-                    withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
-                        usernameVariable: 'SSH_USER',
-                        keyFileVariable: 'SSH_KEY'
-                    )]) {
-                        sh """
-                        echo "🎯 Vérification Finale..."
-                        
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
-                            echo '📊 État Final du Déploiement'
-                            
-                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
-                            
-                            if curl -f -s ${TARGET_URL} > /dev/null; then
-                                echo '✅ APPLICATION EN LIGNE ET FONCTIONNELLE'
-                            else
-                                echo '⚠️ APPLICATION INACCESSIBLE'
-                            fi
-                            
-                            echo ''
-                            echo '🎉 DÉPLOIEMENT TERMINÉ AVEC SUCCÈS!'
-                            echo '🌐 Application disponible: ${TARGET_URL}'
-                        " || echo "Vérification finale échouée"
-                        """
-                    }
-                }
-            }
-        }
+      }
     }
-    
-    post {
-        always {
-            sh '''
+
+    stage('Final Check') {
+      steps {
+        script {
+          withCredentials([sshUserPrivateKey(
+            credentialsId: "${SSH_CREDENTIALS_ID}",
+            usernameVariable: 'SSH_USER',
+            keyFileVariable: 'SSH_KEY'
+          )]) {
+            sh """
+            echo "🎯 Vérification Finale..."
+
+            ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+            echo '📊 État Final du Déploiement'
+
+            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+
+            if curl -f -s ${TARGET_URL} > /dev/null; then
+            echo '✅ APPLICATION EN LIGNE ET FONCTIONNELLE'
+            else
+            echo '⚠️ APPLICATION INACCESSIBLE'
+            fi
+
+            echo ''
+            echo '🎉 DÉPLOIEMENT TERMINÉ AVEC SUCCÈS!'
+            echo '🌐 Application disponible: ${TARGET_URL}'
+            " || echo "Vérification finale échouée"
+            """
+          }
+        }
+
+      }
+    }
+
+  }
+  environment {
+    APP_NAME = 'hello-app'
+    APP_PORT = '8090'
+    DOCKER_REGISTRY = 'laurentmd5'
+    DEPLOY_SERVER = 'devops@localhost'
+    SSH_CREDENTIALS_ID = 'ubuntu-server-ssh'
+    TRIVY_VERSION = '0.49.1'
+    GOSEC_VERSION = '2.19.0'
+    ZAP_VERSION = '2.14.0'
+    TARGET_URL = 'http://192.168.61.131:8090'
+    GIT_TERMINAL_PROMPT = '0'
+  }
+  post {
+    always {
+      sh '''
             echo "Nettoyage final..."
             docker system prune -f 2>/dev/null || true
             
@@ -360,23 +337,25 @@ pipeline {
             echo "Trivy: Scan containers"
             echo "Résumé sécurité complet"
             '''
-            
-            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,${APP_NAME}', fingerprint: true, allowEmptyArchive: true
-        }
-        success {
-            sh """
-            echo ""
-            echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
-            echo "Tous les contrôles de sécurité ont passé"
-            echo "Application déployée sécuritairement"
-            echo "Accédez à l application: ${TARGET_URL}"
-            """
-        }
-        failure {
-            sh """
+      archiveArtifacts(artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,${APP_NAME}', fingerprint: true, allowEmptyArchive: true)
+    }
+
+    success {
+      sh """
+                  echo ""
+                  echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
+                  echo "Tous les contrôles de sécurité ont passé"
+                  echo "Application déployée sécuritairement"
+                  echo "Accédez à l application: ${TARGET_URL}"
+                  """
+    }
+
+    failure {
+      sh '''
             echo "❌ PIPELINE EN ÉCHEC"
             echo "Consultez les rapports pour plus de détails"
-            """
-        }
+            '''
     }
+
+  }
 }

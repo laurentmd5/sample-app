@@ -532,7 +532,7 @@ pipeline {
             echo "   - 📊 Résumé sécurité complet"
             '''
             
-            # Archivage de tous les rapports
+            // Archivage de tous les rapports
             archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,zap-reports/**,lynis-reports/**,${APP_NAME}', fingerprint: true
         }
         success {

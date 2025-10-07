@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // Configuration Application
-        APP_NAME = 'hello-app'
+        APP_NAME = 'go-dev-dashboard'
         APP_PORT = '8090'
         
         // Configuration Docker

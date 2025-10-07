@@ -26,7 +26,7 @@ pipeline {
             steps {
                 git branch: 'master',
                     url: 'https://github.com/laurentmd5/sample-app.git',
-                    credentialsId: 'credential'
+                    credentialsId: 'token'
 
                 sh '''
                 echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"

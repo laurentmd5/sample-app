@@ -10,7 +10,7 @@ pipeline {
         TRIVY_VERSION = '0.49.1'
         GOSEC_VERSION = '2.19.0'
         ZAP_VERSION = '2.14.0'
-        TARGET_URL = "http://192.168.61.131:${APP_PORT}"
+        TARGET_URL = "http://192.168.61.131:8090"
         GIT_TERMINAL_PROMPT = '0'
     }
     
@@ -46,19 +46,19 @@ pipeline {
                 echo "=== Installation de gosec ==="
                 if ! which gosec; then
                     echo "Téléchargement de gosec depuis les releases GitHub..."
-                    wget -q https://github.com/securecodewarrior/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
-                    tar -xzf gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
+                    wget -q https://github.com/securecodewarrior/gosec/releases/download/v2.19.0/gosec_2.19.0_linux_amd64.tar.gz
+                    tar -xzf gosec_2.19.0_linux_amd64.tar.gz
                     sudo mv gosec /usr/local/bin/
-                    rm -f gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
+                    rm -f gosec_2.19.0_linux_amd64.tar.gz
                 fi
                 gosec --version || echo "Gosec non disponible"
                 
                 echo "=== Installation de Trivy ==="
                 if ! which trivy; then
-                    wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb
-                    sudo dpkg -i trivy_${TRIVY_VERSION}_Linux-64bit.deb || true
+                    wget -q https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.deb
+                    sudo dpkg -i trivy_0.49.1_Linux-64bit.deb || true
                     sudo apt-get install -f -y
-                    rm -f trivy_${TRIVY_VERSION}_Linux-64bit.deb
+                    rm -f trivy_0.49.1_Linux-64bit.deb
                 fi
                 trivy --version || echo "Trivy installation failed"
                 
@@ -89,16 +89,16 @@ pipeline {
                 go mod download 2>&1 | tee go-mod.log || echo "Dépendances téléchargées avec warnings"
                 
                 echo "🔨 Compilation de l application..."
-                go build -v -o ${APP_NAME} . 2>&1 | tee build.log
+                go build -v -o hello-app . 2>&1 | tee build.log
                 
                 echo "✅ Vérification du build:"
-                ls -la ${APP_NAME} || echo "Binaire non créé"
-                file ${APP_NAME} 2>/dev/null || echo "Impossible de vérifier le binaire"
-                [ -f "${APP_NAME}" ] && chmod +x ${APP_NAME} || echo "Binaire non disponible"
+                ls -la hello-app || echo "Binaire non créé"
+                file hello-app 2>/dev/null || echo "Impossible de vérifier le binaire"
+                [ -f "hello-app" ] && chmod +x hello-app || echo "Binaire non disponible"
                 
                 # Test SÉCURISÉ avec timeout pour éviter le blocage
                 echo "🔍 Test rapide du binaire..."
-                timeout 5s ./${APP_NAME} --version 2>&1 | head -2 || echo "Test de version terminé"
+                timeout 5s ./hello-app --version 2>&1 | head -2 || echo "Test de version terminé"
                 
                 echo "🎯 Build Go terminé avec succès"
                 '''
@@ -192,11 +192,11 @@ pipeline {
                     [ -f "Dockerfile" ] && cat Dockerfile || echo "Dockerfile non trouvé"
                     
                     # Construction de l'image
-                    docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} . || exit 1
-                    docker tag ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                    docker build -t laurentmd5/hello-app:${env.BUILD_NUMBER} . || exit 1
+                    docker tag laurentmd5/hello-app:${env.BUILD_NUMBER} laurentmd5/hello-app:latest
                     
                     echo "✅ Images Docker créées:"
-                    docker images | grep ${DOCKER_REGISTRY} || echo "Aucune image trouvée pour ${DOCKER_REGISTRY}"
+                    docker images | grep laurentmd5 || echo "Aucune image trouvée pour laurentmd5"
                     """
                 }
             }
@@ -210,9 +210,9 @@ pipeline {
                 mkdir -p trivy-reports
                 
                 echo "=== Scan de l Image Docker ==="
-                trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>/dev/null || echo "Scan HTML échoué"
-                trivy image --format json -o trivy-reports/container-scan.json ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>/dev/null || echo "Scan JSON échoué"
-                trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>&1 | tee trivy-reports/container-scan-summary.txt || echo "Scan summary terminé"
+                trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html laurentmd5/hello-app:latest 2>/dev/null || echo "Scan HTML échoué"
+                trivy image --format json -o trivy-reports/container-scan.json laurentmd5/hello-app:latest 2>/dev/null || echo "Scan JSON échoué"
+                trivy image --exit-code 0 --severity HIGH,CRITICAL laurentmd5/hello-app:latest 2>&1 | tee trivy-reports/container-scan-summary.txt || echo "Scan summary terminé"
                 
                 echo "✅ Scan du container terminé"
                 '''
@@ -267,36 +267,36 @@ pipeline {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        credentialsId: "ubuntu-server-ssh",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
                         echo "🚀 Déploiement sur le serveur Ubuntu..."
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
                             set -e
                             echo '🎯 Démarrage du déploiement...'
                             
                             # Arrêt et nettoyage des anciens conteneurs
-                            docker stop ${APP_NAME} 2>/dev/null || true
-                            docker rm ${APP_NAME} 2>/dev/null || true
+                            docker stop hello-app 2>/dev/null || true
+                            docker rm hello-app 2>/dev/null || true
                             
                             # Pull de l'image
-                            docker pull ${DOCKER_REGISTRY}/${APP_NAME}:latest || echo "Utilisation de l'image locale"
+                            docker pull laurentmd5/hello-app:latest || echo "Utilisation de l image locale"
                             
                             # Lancement du conteneur
                             docker run -d \\
-                              --name ${APP_NAME} \\
-                              -p ${APP_PORT}:${APP_PORT} \\
+                              --name hello-app \\
+                              -p 8090:8090 \\
                               --restart unless-stopped \\
-                              ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                              laurentmd5/hello-app:latest
                             
                             # Attente courte
                             sleep 10
                             
                             # Vérification
-                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+                            docker ps --filter 'name=hello-app' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
                             echo '✅ Déploiement terminé avec succès'
                         " || echo "SSH connection échouée"
@@ -311,23 +311,23 @@ pipeline {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        credentialsId: "ubuntu-server-ssh",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
                         echo "📥 Installation d OWASP ZAP sur le serveur..."
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
                             if which zap-baseline.py || which /usr/share/zaproxy/zap-baseline.py; then
                                 echo '✅ ZAP déjà installé'
                             else
                                 echo '📥 Installation de ZAP...'
                                 sudo apt update -y
                                 sudo apt install -y default-jre wget
-                                wget -q https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/zap_${ZAP_VERSION}_all.deb
-                                sudo dpkg -i zap_${ZAP_VERSION}_all.deb || (sudo apt-get install -f -y && sudo dpkg -i zap_${ZAP_VERSION}_all.deb)
-                                rm -f zap_${ZAP_VERSION}_all.deb
+                                wget -q https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/zap_2.14.0_all.deb
+                                sudo dpkg -i zap_2.14.0_all.deb || (sudo apt-get install -f -y && sudo dpkg -i zap_2.14.0_all.deb)
+                                rm -f zap_2.14.0_all.deb
                                 echo '✅ ZAP installé avec succès'
                             fi
                             
@@ -345,7 +345,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        credentialsId: "ubuntu-server-ssh",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
@@ -353,13 +353,13 @@ pipeline {
                         echo "🛡️ Scan de Sécurité Dynamique OWASP ZAP..."
                         mkdir -p zap-reports
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
                             echo '=== Démarrage du Scan ZAP ==='
                             
                             # Attente que l'application soit prête
-                            echo '⏳ Vérification de l\\'application...'
+                            echo '⏳ Vérification de l application...'
                             for i in {1..12}; do
-                                if curl -f -s ${TARGET_URL} > /dev/null; then
+                                if curl -f -s http://192.168.61.131:8090 > /dev/null; then
                                     echo '✅ Application accessible'
                                     break
                                 fi
@@ -370,7 +370,7 @@ pipeline {
                             ZAP_CMD=\\$(which zap-baseline.py || echo /usr/share/zaproxy/zap-baseline.py)
                             
                             # Scan ZAP
-                            \\$ZAP_CMD -t ${TARGET_URL} -I -m 5 -T 10 -J -j -x /home/devops/zap-reports/zap-report.xml -r /home/devops/zap-reports/zap-report.html 2>&1 | tee /home/devops/zap-reports/zap-scan.log || echo 'Scan ZAP terminé avec des findings'
+                            \\$ZAP_CMD -t http://192.168.61.131:8090 -I -m 5 -T 10 -J -j -x /home/devops/zap-reports/zap-report.xml -r /home/devops/zap-reports/zap-report.html 2>&1 | tee /home/devops/zap-reports/zap-scan.log || echo 'Scan ZAP terminé avec des findings'
                             
                             # Nettoyage
                             pkill -f zaproxy 2>/dev/null || true
@@ -378,8 +378,8 @@ pipeline {
                         " || echo "Scan ZAP échoué"
                         
                         # Récupération des rapports
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-reports/zap-report.html zap-reports/ 2>/dev/null || echo 'Rapport HTML non disponible'
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-reports/zap-report.xml zap-reports/ 2>/dev/null || echo 'Rapport XML non disponible'
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/home/devops/zap-reports/zap-report.html zap-reports/ 2>/dev/null || echo 'Rapport HTML non disponible'
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/home/devops/zap-reports/zap-report.xml zap-reports/ 2>/dev/null || echo 'Rapport XML non disponible'
                         
                         # Fichiers fallback
                         touch zap-reports/zap-report.html
@@ -407,7 +407,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        credentialsId: "ubuntu-server-ssh",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
@@ -415,7 +415,7 @@ pipeline {
                         echo "🏢 Audit de Sécurité de l Environnement..."
                         mkdir -p lynis-reports
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
                             echo '=== Audit Système avec Lynis ==='
                             sudo lynis audit system --quick 2>&1 | tee /tmp/lynis-audit.txt || echo 'Lynis audit échoué'
                             
@@ -424,8 +424,8 @@ pipeline {
                         " || echo "Audit environnement échoué"
                         
                         # Récupération des rapports
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/tmp/lynis-audit.txt lynis-reports/ 2>/dev/null || echo 'Rapport Lynis non disponible'
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/tmp/security-updates.txt lynis-reports/ 2>/dev/null || echo 'Rapport updates non disponible'
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/tmp/lynis-audit.txt lynis-reports/ 2>/dev/null || echo 'Rapport Lynis non disponible'
+                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/tmp/security-updates.txt lynis-reports/ 2>/dev/null || echo 'Rapport updates non disponible'
                         
                         # Fichiers fallback
                         touch lynis-reports/lynis-audit.txt
@@ -451,8 +451,8 @@ pipeline {
                 # Rapport de Sécurité Complet - Build ${BUILD_NUMBER}
                 
                 Date: $(date)
-                Application: ${APP_NAME}
-                URL: ${TARGET_URL}
+                Application: hello-app
+                URL: http://192.168.61.131:8090
                 
                 Analyse Statique
                 - Gosec: $(ls security-reports/gosec-report.html 2>/dev/null && echo "Complété" || echo "Échoué")
@@ -502,19 +502,19 @@ pipeline {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        credentialsId: "ubuntu-server-ssh",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
                         echo "🎯 Vérification Finale..."
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
                             echo '📊 État Final du Déploiement'
                             
-                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+                            docker ps --filter 'name=hello-app' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
-                            if curl -f -s ${TARGET_URL} > /dev/null; then
+                            if curl -f -s http://192.168.61.131:8090 > /dev/null; then
                                 echo '✅ APPLICATION EN LIGNE ET FONCTIONNELLE'
                             else
                                 echo '⚠️ APPLICATION INACCESSIBLE'
@@ -522,7 +522,7 @@ pipeline {
                             
                             echo ''
                             echo '🎉 DÉPLOIEMENT ET SCANS TERMINÉS AVEC SUCCÈS!'
-                            echo '🌐 Application disponible: ${TARGET_URL}'
+                            echo '🌐 Application disponible: http://192.168.61.131:8090'
                         " || echo "Vérification finale échouée"
                         """
                     }
@@ -554,7 +554,7 @@ pipeline {
             echo "Résumé sécurité complet"
             '''
             
-            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,zap-reports/**,lynis-reports/**,${APP_NAME}', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,zap-reports/**,lynis-reports/**,hello-app', fingerprint: true, allowEmptyArchive: true
         }
         success {
             sh """
@@ -562,7 +562,7 @@ pipeline {
             echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
             echo "Tous les contrôles de sécurité ont passé"
             echo "Application déployée sécuritairement"
-            echo "Accédez à l application: ${TARGET_URL}"
+            echo "Accédez à l application: http://192.168.61.131:8090"
             """
         }
         failure {

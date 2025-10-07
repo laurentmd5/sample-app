@@ -3,7 +3,7 @@ pipeline {
   stages {
     stage('Checkout Code') {
       steps {
-        git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'token')
+        git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: '732f6a82-d7a3-4316-860d-382960b3d9da')
         sh '''
           echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
           echo "📝 Branch: master"

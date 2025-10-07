@@ -1,7 +1,7 @@
 # ==============================
 # 🔨 STAGE 1 — Build
 # ==============================
-FROM golang:1.23.2-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Labels pour traçabilité
 LABEL maintainer="Laurent MAVOUNGOU <dev@yourdomain.com>"

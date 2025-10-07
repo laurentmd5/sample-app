@@ -1,26 +1,5 @@
 pipeline {
     agent any
-    // Déclencheurs automatiques
-    triggers {
-        // Déclenchement par webhook GitHub
-        githubPush()
-        
-        // Ou polling toutes les 2 minutes
-        pollSCM('H/2 * * * *')
-    }
-    
-    environment {
-        APP_NAME = 'hello-app'
-        APP_PORT = '8090'
-        DOCKER_REGISTRY = 'laurentmd5'
-        DEPLOY_SERVER = 'devops@localhost'
-        SSH_CREDENTIALS_ID = 'ubuntu-server-ssh'
-    }
-    
-    stages {
-        // Vos stages existants...
-    }
-}
     
     environment {
         // Configuration Application

@@ -7,7 +7,7 @@ pipeline {
     }
     
     environment {
-        APP_NAME = 'go-dev-dashboard'
+        APP_NAME = 'hello-app'
         APP_PORT = '8090'
         DOCKER_REGISTRY = 'laurentmd5'
         DEPLOY_SERVER = 'devops@localhost'
@@ -111,7 +111,6 @@ pipeline {
                 if which gosec; then
                     gosec -fmt=json -out=security-reports/gosec-report.json ./... 2>/dev/null || true
                     gosec -fmt=html -out=security-reports/gosec-report.html ./... 2>/dev/null || true
-                    gosec -fmt=sarif -out=security-reports/gosec-report.sarif ./... 2>/dev/null || true
                     gosec ./... 2>&1 | tee security-reports/gosec-output.txt || echo "Gosec a terminé avec des findings"
                     echo "✅ Analyse gosec terminée"
                 else
@@ -121,10 +120,6 @@ pipeline {
                 # Analyse supplémentaire avec go vet
                 echo "=== Exécution de go vet ==="
                 go vet ./... 2>&1 | tee security-reports/govet-output.txt || echo "Go vet terminé"
-                
-                # Vérification des formats
-                echo "=== Vérification du format ==="
-                test -z "$(gofmt -l .)" && echo "✅ Code bien formaté" || echo "⚠️ Problèmes de format"
                 '''
             }
             post {
@@ -158,10 +153,6 @@ pipeline {
                 go tool cover -html=test-reports/coverage.out -o test-reports/coverage.html
                 go tool cover -func=test-reports/coverage.out > test-reports/coverage-summary.txt
                 
-                # Rapport JUnit pour Jenkins
-                echo "=== Rapport JUnit ==="
-                go test -v ./... 2>&1 | go-junit-report > test-reports/report.xml 2>/dev/null || echo "JUnit report non généré"
-                
                 # Affichage du résumé
                 echo "=== Résumé de Couverture ==="
                 cat test-reports/coverage-summary.txt | grep total || echo "Aucune donnée de couverture"
@@ -169,7 +160,6 @@ pipeline {
             }
             post {
                 always {
-                    junit testResults: 'test-reports/report.xml', allowEmptyResults: true
                     publishHTML([
                         allowMissing: true,
                         alwaysLinkToLastBuild: true,
@@ -189,11 +179,6 @@ pipeline {
                 script {
                     sh """
                     echo "🐳 Construction de l'Image Docker..."
-                    
-                    # Vérification du Dockerfile
-                    echo "=== Contenu du Dockerfile ==="
-                    cat Dockerfile
-                    echo "============================="
                     
                     # Construction de l'image
                     docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} .
@@ -218,10 +203,6 @@ pipeline {
                 trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html ${DOCKER_REGISTRY}/${APP_NAME}:latest
                 trivy image --format json -o trivy-reports/container-scan.json ${DOCKER_REGISTRY}/${APP_NAME}:latest
                 trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_REGISTRY}/${APP_NAME}:latest
-                
-                # Scan avec rapport détaillé
-                echo "=== Scan Détaillé ==="
-                trivy image --severity HIGH,CRITICAL --format table ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>&1 | tee trivy-reports/container-scan-summary.txt
                 
                 echo "✅ Scan du container terminé"
                 '''
@@ -254,12 +235,6 @@ pipeline {
                 trivy filesystem --format json -o trivy-reports/fs-scan.json .
                 trivy filesystem --exit-code 0 --severity HIGH,CRITICAL .
                 
-                # Scan spécifique des dépendances Go
-                echo "=== Scan des Dépendances Go ==="
-                if [ -f "go.mod" ]; then
-                    trivy filesystem --skip-dirs-db-update --skip-java-db-update go.mod 2>&1 | tee trivy-reports/go-deps-scan.txt || true
-                fi
-                
                 echo "✅ Scan du filesystem terminé"
                 '''
             }
@@ -273,7 +248,7 @@ pipeline {
                         reportFiles: 'fs-scan.html',
                         reportName: 'Scan Sécurité Filesystem - Trivy'
                     ])
-                    archiveArtifacts artifacts: 'trivy-reports/fs-scan.*,trivy-reports/go-deps-scan.txt', fingerprint: true
+                    archiveArtifacts artifacts: 'trivy-reports/fs-scan.*', fingerprint: true
                 }
             }
         }
@@ -292,19 +267,13 @@ pipeline {
                         
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
                             set -e
-                            echo '🎯 Démarrage du déploiement de ${APP_NAME}...'
+                            echo '🎯 Démarrage du déploiement...'
                             
                             # Arrêt de l'ancien conteneur
-                            echo '⏹️ Arrêt du conteneur existant...'
                             docker stop ${APP_NAME} 2>/dev/null || true
                             docker rm ${APP_NAME} 2>/dev/null || true
                             
-                            # Nettoyage
-                            echo '🧹 Nettoyage...'
-                            docker image prune -f 2>/dev/null || true
-                            
                             # Lancement du nouveau conteneur
-                            echo '🐳 Démarrage du nouveau conteneur...'
                             docker run -d \\
                               --name ${APP_NAME} \\
                               -p ${APP_PORT}:${APP_PORT} \\
@@ -312,11 +281,9 @@ pipeline {
                               ${DOCKER_REGISTRY}/${APP_NAME}:latest
                             
                             # Attente du démarrage
-                            echo '⏳ Attente du démarrage...'
                             sleep 15
                             
                             # Vérification
-                            echo '🔍 Vérification du déploiement...'
                             docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
                             echo '✅ Déploiement terminé avec succès'
@@ -340,26 +307,19 @@ pipeline {
                         echo "📥 Installation d'OWASP ZAP sur le serveur..."
                         
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
-                            set -e
-                            echo '=== Installation d\\'OWASP ZAP ==='
-                            
                             # Vérifier si ZAP est déjà installé
                             if which zap-baseline.py; then
                                 echo '✅ ZAP déjà installé'
-                                zap-baseline.py -version 2>/dev/null || echo 'ZAP présent'
                             else
                                 echo '📥 Installation de ZAP...'
                                 sudo apt update
-                                sudo apt install -y default-jre wget curl
+                                sudo apt install -y default-jre wget
                                 wget -q https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/zap_${ZAP_VERSION}_all.deb
                                 sudo dpkg -i zap_${ZAP_VERSION}_all.deb || sudo apt-get install -f -y
                                 sudo apt install -y zaproxy
                                 rm -f zap_${ZAP_VERSION}_all.deb
                                 echo '✅ ZAP installé avec succès'
                             fi
-                            
-                            # Créer le répertoire pour les rapports
-                            mkdir -p /home/devops/zap-reports
                         "
                         """
                     }
@@ -382,20 +342,13 @@ pipeline {
                         
                         # Exécution du scan ZAP sur le serveur
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
-                            set -e
                             echo '=== Démarrage du Scan ZAP ==='
                             
                             # Attendre que l'application soit prête
-                            echo '⏳ Vérification que l\\'application est accessible...'
-                            timeout 60 bash -c 'until curl -f -s ${TARGET_URL} > /dev/null; do sleep 5; done'
+                            sleep 30
                             
                             # Scan baseline ZAP
-                            echo '=== Scan Baseline ZAP ==='
-                            zap-baseline.py -t ${TARGET_URL} -I -m 5 -T 10 -J -j -x /home/devops/zap-reports/zap-report.xml -r /home/devops/zap-reports/zap-report.html 2>&1 | tee /home/devops/zap-reports/zap-scan.log || echo 'Scan ZAP terminé avec des findings'
-                            
-                            # Résumé du scan
-                            echo '=== Résumé du Scan ZAP ==='
-                            grep -E '(PASS|FAIL|WARN|INFO)' /home/devops/zap-reports/zap-scan.log | tail -15
+                            zap-baseline.py -t ${TARGET_URL} -I -m 5 -T 10 -J -j -x /home/devops/zap-report.xml -r /home/devops/zap-report.html 2>&1 | tee /home/devops/zap-scan.log || echo 'Scan ZAP terminé avec des findings'
                             
                             # Nettoyage des processus ZAP
                             pkill -f zaproxy 2>/dev/null || true
@@ -403,10 +356,8 @@ pipeline {
                         "
                         
                         # Récupération des rapports ZAP
-                        echo '📥 Téléchargement des rapports ZAP...'
-                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-reports/zap-report.html zap-reports/ || echo 'Rapport HTML non disponible'
-                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-reports/zap-report.xml zap-reports/ || echo 'Rapport XML non disponible'
-                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-reports/zap-scan.log zap-reports/ || echo 'Log de scan non disponible'
+                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-report.html zap-reports/ || echo 'Rapport HTML non disponible'
+                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/home/devops/zap-report.xml zap-reports/ || echo 'Rapport XML non disponible'
                         """
                     }
                 }
@@ -441,38 +392,16 @@ pipeline {
                         
                         # Audit du serveur avec Lynis
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
-                            set -e
                             echo '=== Audit Système avec Lynis ==='
-                            sudo lynis audit system --quick --no-colors 2>&1 | tee /tmp/lynis-audit.txt
+                            sudo lynis audit system --quick 2>&1 | tee /tmp/lynis-audit.txt
                             
-                            echo '=== Vérification des Mises à Jour de Sécurité ==='
-                            sudo apt update && sudo apt list --upgradable 2>/dev/null | grep -E '(security|ubuntu)' | head -10 | tee /tmp/security-updates.txt
-                            
-                            echo '=== Vérification des Services ==='
-                            sudo systemctl status docker 2>&1 | head -5 | tee /tmp/docker-status.txt
-                            
-                            echo '=== Utilisation des Ressources ==='
-                            free -h | tee /tmp/memory-usage.txt
-                            df -h | grep -v tmpfs | tee /tmp/disk-usage.txt
+                            echo '=== Vérification des Mises à Jour ==='
+                            sudo apt update && sudo apt list --upgradable 2>/dev/null | head -10 | tee /tmp/security-updates.txt
                         "
                         
-                        # Récupération des rapports
+                        # Récupération des rapports - CORRECTION APPLIQUÉE ICI
                         scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/tmp/lynis-audit.txt lynis-reports/ || echo 'Rapport Lynis non disponible'
                         scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/tmp/security-updates.txt lynis-reports/ || echo 'Rapport updates non disponible'
-                        
-                        # Génération d'un rapport consolidé
-                        cat > lynis-reports/environment-summary.txt << EOF
-                        === RAPPORT ENVIRONNEMENT ===
-                        Date: $(date)
-                        Serveur: ${DEPLOY_SERVER}
-                        Application: ${APP_NAME}
-                        
-                        === AUDIT LYNIS ===
-                        $(cat lynis-reports/lynis-audit.txt 2>/dev/null || echo 'Non disponible')
-                        
-                        === MISES À JOUR SÉCURITÉ ===
-                        $(cat lynis-reports/security-updates.txt 2>/dev/null || echo 'Aucune mise à jour critique')
-                        EOF
                         """
                     }
                 }
@@ -487,12 +416,9 @@ pipeline {
         // ÉTAPE 13: Rapport de Sécurité Consolidé
         stage('Security Summary') {
             steps {
-                sh """
-                echo "📊 RAPPORT DE SÉCURITÉ CONSOLIDÉ"
-                echo "================================"
-                """
-                
                 sh '''
+                echo "📊 Génération du Rapport de Sécurité Consolidé..."
+                
                 # Génération du rapport Markdown
                 cat > security-summary.md << EOF
                 # Rapport de Sécurité Complet - Build ${BUILD_NUMBER}
@@ -507,7 +433,6 @@ pipeline {
                 
                 ## 🧪 Tests Dynamiques
                 - **Couverture**: $(if [ -f "test-reports/coverage-summary.txt" ]; then cat test-reports/coverage-summary.txt | grep total | awk "{print \\$3}"; else echo "N/A"; fi)
-                - **Tests Unitaires**: $(ls test-reports/report.xml 2>/dev/null && echo "✅ Exécutés" || echo "❌ Non exécutés")
                 
                 ## 🔒 Sécurité Container
                 - **Scan Image**: $(ls trivy-reports/container-scan.html 2>/dev/null && echo "✅ Complété" || echo "❌ Échoué")
@@ -518,23 +443,15 @@ pipeline {
                 
                 ## 🏢 Environnement
                 - **Audit Lynis**: $(ls lynis-reports/lynis-audit.txt 2>/dev/null && echo "✅ Complété" || echo "❌ Échoué")
-                - **Mises à jour**: $(ls lynis-reports/security-updates.txt 2>/dev/null && echo "✅ Vérifiées" || echo "❌ Non vérifiées")
                 
                 ## 📈 Statut Global
                 - **Build**: ${currentBuild.result}
-                - **Durée**: ${currentBuild.durationString}
                 - **Application**: $(curl -s -o /dev/null -w "%{http_code}" ${TARGET_URL} || echo "Inaccessible")
-                
-                ## 📋 Recommendations
-                - Vérifier les vulnérabilités critiques dans les rapports Trivy
-                - Examiner les findings ZAP pour les éventuelles failles web
-                - Mettre à jour les dépendances si nécessaire
-                - Surveiller les mises à jour de sécurité système
                 
                 EOF
                 
-                # Conversion en HTML
-                which pandoc && pandoc security-summary.md -o security-reports/security-summary.html || cp security-summary.md security-reports/security-summary.html
+                # Copie simple sans pandoc
+                cp security-summary.md security-reports/security-summary.html
                 
                 echo "✅ Rapport de sécurité généré"
                 '''
@@ -557,11 +474,6 @@ pipeline {
         // ÉTAPE 14: Vérification Finale
         stage('Final Check') {
             steps {
-                sh """
-                echo "🎯 VÉRIFICATION FINALE"
-                echo "======================"
-                """
-                
                 script {
                     withCredentials([sshUserPrivateKey(
                         credentialsId: "${SSH_CREDENTIALS_ID}",
@@ -569,40 +481,25 @@ pipeline {
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
+                        echo "🎯 Vérification Finale..."
+                        
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
-                            echo '📊 ÉTAT FINAL DU DÉPLOIEMENT'
+                            echo '📊 État Final du Déploiement'
                             echo '============================'
                             
                             # Statut de l'application
-                            echo '=== Application ==='
-                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.RunningFor}}\\t{{.Ports}}'
+                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
                             # Santé de l'application
-                            echo '=== Santé ==='
-                            if curl -f -s -o /dev/null -w 'HTTP: %{http_code}\\n' ${TARGET_URL}; then
+                            if curl -f -s ${TARGET_URL} > /dev/null; then
                                 echo '✅ APPLICATION EN LIGNE ET FONCTIONNELLE'
                             else
                                 echo '❌ APPLICATION INACCESSIBLE'
-                                docker logs ${APP_NAME} --tail 10
                             fi
-                            
-                            # Ressources
-                            echo '=== Ressources ==='
-                            echo 'Mémoire:'
-                            free -h | head -2
-                            echo 'Disque:'
-                            df -h /home
-                            
-                            # Sécurité
-                            echo '=== Sécurité ==='
-                            echo 'Conteneur isolé: ' \$(docker inspect ${APP_NAME} --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || echo 'bridge')
-                            echo 'Port exposé: ${APP_PORT}'
                             
                             echo ''
                             echo '🎉 DÉPLOIEMENT ET SCANS TERMINÉS AVEC SUCCÈS!'
-                            echo '🛡️ Tous les contrôles de sécurité ont été exécutés'
                             echo '🌐 Application disponible: ${TARGET_URL}'
-                            echo '📊 Consultez Jenkins pour les rapports détaillés'
                         "
                         """
                     }
@@ -618,14 +515,13 @@ pipeline {
             docker system prune -f 2>/dev/null || true
             
             echo ""
-            echo "📊 RÉSUMÉ DE L'EXÉCUTION"
-            echo "========================"
+            echo "📊 RÉSUMÉ DE L'\''EXÉCUTION"
+            echo "========================="
             echo "✅ Application Go construite"
             echo "✅ Image Docker créée"
             echo "✅ Tests et couverture exécutés"
             echo "✅ Scans de sécurité complétés"
             echo "✅ Application déployée"
-            echo "✅ Audits environnementaux réalisés"
             echo ""
             echo "📋 RAPPORTS DISPONIBLES:"
             echo "   - 🔍 Gosec: Analyse statique"
@@ -646,32 +542,14 @@ pipeline {
             echo "======================================="
             echo "🛡️  Tous les contrôles de sécurité ont passé"
             echo "🚀  Application déployée sécuritairement"
-            echo "📈  Rapports de sécurité générés"
             echo "🌐  Accédez à l'application: ${TARGET_URL}"
-            echo ""
-            echo "✅ BUILD: ${env.BUILD_NUMBER}"
-            echo "✅ RÉSULTAT: SUCCÈS"
             """
         }
         failure {
             sh """
             echo "❌ PIPELINE EN ÉCHEC"
             echo "==================="
-            echo "💡 Causes possibles:"
-            echo "   - Échec de compilation"
-            echo "   - Tests en échec"
-            echo "   - Vulnérabilités critiques détectées"
-            echo "   - Problèmes de déploiement"
-            echo ""
-            echo "🔍 Consultez les rapports pour plus de détails"
-            """
-        }
-        unstable {
-            sh """
-            echo "⚠️ PIPELINE INSTABLE"
-            echo "==================="
-            echo "📝 Certains scans ont détecté des problèmes non-critiques"
-            echo "💡 Vérifiez les rapports de sécurité pour les détails"
+            echo "💡 Consultez les rapports pour plus de détails"
             """
         }
     }

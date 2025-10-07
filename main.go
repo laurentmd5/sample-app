@@ -1,19 +1,3 @@
-/**
- * Copyright 2023 Google Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package main
 
 import (
@@ -22,11 +6,44 @@ import (
 	"image/draw"
 	"image/png"
 	"net/http"
+	"os"
 )
 
 func main() {
+	// Utiliser le port depuis les variables d'environnement ou 8090 par défaut
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8090"
+	}
+
+	http.HandleFunc("/", homeHandler)
 	http.HandleFunc("/blue", blueHandler)
-	http.ListenAndServe(":8080", nil)
+	
+	println("🚀 Server starting on port " + port)
+	err := http.ListenAndServe(":"+port, nil)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func homeHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(`
+		<!DOCTYPE html>
+		<html>
+		<head>
+			<title>Go App</title>
+		</head>
+		<body>
+			<h1>🚀 Hello from Go Application!</h1>
+			<p>Your application is running successfully!</p>
+			<ul>
+				<li><a href="/blue">Blue Image</a></li>
+				<li><a href="/health">Health Check</a></li>
+			</ul>
+		</body>
+		</html>
+	`))
 }
 
 func blueHandler(w http.ResponseWriter, r *http.Request) {

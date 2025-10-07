@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        APP_NAME = 'hello-app'
+        APP_NAME = 'go-dev-dashboard'
         APP_PORT = '8090'
         DOCKER_REGISTRY = 'laurentmd5'
         DEPLOY_SERVER = 'devops@localhost'

@@ -10,10 +10,16 @@ LABEL description="Go Dev Dashboard - outil de monitoring et sécurité pour dé
 WORKDIR /app
 
 # Copie des fichiers sources et initialisation du module
-COPY go.mod go.sum* . 2>/dev/null || true
+COPY go.mod ./
+# Copie optionnelle du fichier go.sum s’il existe
+# (utilise une commande shell dans RUN car COPY ne supporte pas les jokers avec fallback)
+RUN test -f go.sum && cp go.sum . || true
+
+# Initialisation et récupération des dépendances
 RUN go mod init go-dev-dashboard || true
 RUN go mod tidy
 
+# Copie du reste du code source
 COPY . .
 
 # Compilation statique (sécurisée et portable)

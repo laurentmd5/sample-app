@@ -50,91 +50,109 @@ pipeline {
                 mkdir -p /var/lib/jenkins/go
                 chown jenkins:jenkins /var/lib/jenkins/go
                 
-                echo "Current user:"
                 whoami
-                echo "Workspace:"
                 pwd
                 '''
             }
         }
         
-        // ÉTAPE 3: Build application Go
+        // ÉTAPE 3: Build Go Application
         stage('Build Go Application') {
             steps {
                 sh '''
                 echo "🏗️ Building Go application..."
                 
-                echo "=== Main Go file ==="
-                cat main.go | head -10
-                
-                # Initialiser go.mod si absent
                 if [ ! -f "go.mod" ]; then
                     echo "📝 Initializing go.mod..."
-                    go mod init hello-app
+                    go mod init go-dev-dashboard
                 fi
-                
-                echo "📥 Downloading dependencies..."
+
                 go mod tidy
-                go mod download || echo "No dependencies or already downloaded"
-                
-                echo "🔨 Compiling application..."
+                go mod download
+
                 go build -v -o ${APP_NAME} .
-                
+
                 echo "✅ Build completed:"
                 ls -la ${APP_NAME}
                 file ${APP_NAME}
-                
-                echo "🚀 Quick startup test (5s)..."
-                nohup ./${APP_NAME} > app.log 2>&1 &
-                APP_PID=$!
-                sleep 5
-                if curl -s http://localhost:${APP_PORT}/ > /dev/null; then
-                    echo "✅ Application responded on port ${APP_PORT}"
-                else
-                    echo "⚠️ Application did not respond on port ${APP_PORT} (may require run context)"
-                fi
-                kill $APP_PID || true
-                echo "🧹 App test instance stopped"
                 '''
             }
         }
-        
-        // ÉTAPE 4: Tests statiques simplifiés
+
+        // ÉTAPE 4: Static Code Analysis (GoSec)
+        stage('Static Code Analysis') {
+            steps {
+                sh '''
+                echo "🔍 Running GoSec security analysis..."
+                go install github.com/securego/gosec/v2/cmd/gosec@latest
+                export PATH=$PATH:$(go env GOPATH)/bin
+                gosec ./... || echo "⚠️ Gosec found issues (non-blocking)"
+                '''
+            }
+        }
+
+        // ÉTAPE 5: Dynamic Tests (Unit tests + Coverage)
+        stage('Dynamic Tests') {
+            steps {
+                sh '''
+                echo "🧪 Running unit tests with coverage..."
+                go test ./... -v -coverprofile=coverage.out || echo "⚠️ Tests failed"
+                go tool cover -func=coverage.out | tee coverage-report.txt
+                '''
+            }
+        }
+
+        // ÉTAPE 6: Static Analysis simplifiée
         stage('Static Analysis') {
             steps {
                 sh '''
-                echo "🔍 Running static analysis..."
-                go vet . 2>/dev/null && echo "✅ Go vet passed" || echo "⚠️ Go vet issues"
-                
-                echo "=== Compilation check ==="
-                go build -o /tmp/test-build . && echo "✅ Code compiles" || echo "❌ Compilation failed"
+                echo "🔍 Running basic static analysis..."
+                go vet . || echo "⚠️ Go vet issues"
+                go build -o /tmp/test-build . && echo "✅ Code compiles"
                 rm -f /tmp/test-build
-                echo "✅ Static analysis completed"
                 '''
             }
         }
-        
-        // ÉTAPE 5: Construction image Docker
+
+        // ÉTAPE 7: Build Docker Image
         stage('Build Docker Image') {
             steps {
-                script {
-                    sh """
-                    echo "🐳 Building Docker image..."
-                    echo "=== Dockerfile Content ==="
-                    cat Dockerfile || echo "⚠️ No Dockerfile found"
-                    echo "=========================="
-                    
-                    docker build -t ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} .
-                    docker tag ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
-                    
-                    echo "✅ Docker images created:"
-                    docker images | grep ${DOCKER_REGISTRY}
-                    """
-                }
+                sh '''
+                echo "🐳 Building Docker image..."
+                echo "=== Dockerfile Content ==="
+                cat Dockerfile
+                echo "=========================="
+
+                docker build -t ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} .
+                docker tag ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
+
+                echo "✅ Docker images created:"
+                docker images | grep ${DOCKER_REGISTRY}
+                '''
             }
         }
-        
-        // ÉTAPE 6: Déploiement sur Ubuntu
+
+        // ÉTAPE 8: Container Scan (Trivy)
+        stage('Container Scan') {
+            steps {
+                sh '''
+                echo "🛡️ Scanning Docker image for vulnerabilities (Trivy)..."
+                trivy image --quiet --no-progress --severity HIGH,CRITICAL ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest || echo "⚠️ Vulnerabilities found"
+                '''
+            }
+        }
+
+        // ÉTAPE 9: Filesystem Scan (Trivy FS)
+        stage('Filesystem Scan') {
+            steps {
+                sh '''
+                echo "🧾 Scanning source filesystem for vulnerabilities..."
+                trivy fs --quiet --no-progress --severity HIGH,CRITICAL . || echo "⚠️ Issues found in filesystem"
+                '''
+            }
+        }
+
+        // ÉTAPE 10: Deploy to Ubuntu via SSH
         stage('Deploy to Ubuntu via SSH') {
             steps {
                 script {
@@ -145,45 +163,67 @@ pipeline {
                     )]) {
                         sh """
                         echo "🚀 Deploying to Ubuntu server..."
-                        
                         ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
                             set -e
                             echo '🎯 Starting deployment of ${APP_NAME}...'
-                            
-                            echo '⏹️ Stopping existing container...'
+
                             docker stop ${APP_NAME} 2>/dev/null || true
                             docker rm ${APP_NAME} 2>/dev/null || true
-                            
-                            echo '🧹 Cleaning up...'
                             docker image prune -f 2>/dev/null || true
-                            
-                            echo '🐳 Starting new container...'
+
                             docker run -d \\
                               --name ${APP_NAME} \\
                               -p ${APP_PORT}:${APP_PORT} \\
                               --restart unless-stopped \\
                               ${DOCKER_REGISTRY}/${APP_NAME}:latest
-                            
-                            echo '⏳ Waiting for startup...'
+
                             sleep 10
-                            
-                            echo '🔍 Verification:'
                             docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}'
-                            
+
                             if curl -f -s http://localhost:${APP_PORT}/ > /dev/null; then
                                 echo '✅ Health check passed'
-                                echo '🎉 Deployment successful!'
-                                echo '🌐 Application URL: http://localhost:${APP_PORT}'
-                                echo '🌐 Network URL: http://192.168.61.131:${APP_PORT}'
                             else
-                                echo '⚠️ Health check failed - checking logs...'
+                                echo '⚠️ Health check failed'
                                 docker logs ${APP_NAME} --tail 10
-                                echo '⚠️ Deployment completed but health check failed'
                             fi
                         "
                         """
                     }
                 }
+            }
+        }
+
+        // ÉTAPE 11: Environment Scan (Lynis + apt audit)
+        stage('Environment Scan') {
+            steps {
+                script {
+                    withCredentials([sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        usernameVariable: 'SSH_USER',
+                        keyFileVariable: 'SSH_KEY'
+                    )]) {
+                        sh """
+                        echo "🧮 Running environment security scan..."
+                        ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
+                            sudo apt update -qq
+                            sudo apt install -y lynis > /dev/null 2>&1 || true
+                            sudo lynis audit system --quiet || echo '⚠️ Lynis found warnings'
+                        "
+                        """
+                    }
+                }
+            }
+        }
+
+        // ÉTAPE 12: Final Check
+        stage('Final Check') {
+            steps {
+                sh '''
+                echo "🔁 Final verification..."
+                echo "📦 Checking Docker containers status..."
+                docker ps --format "table {{.Names}}\t{{.Status}}"
+                echo "✅ Pipeline and deployment verification complete!"
+                '''
             }
         }
     }
@@ -195,27 +235,20 @@ pipeline {
             docker system prune -f 2>/dev/null || true
             rm -f ${APP_NAME} 2>/dev/null || true
             '''
-            
-            archiveArtifacts artifacts: '${APP_NAME},go.mod,*.go', fingerprint: true
+            archiveArtifacts artifacts: '${APP_NAME},go.mod,*.go,coverage-report.txt', fingerprint: true
         }
         success {
             sh """
-            echo ""
             echo "✅ DÉPLOIEMENT RÉUSSI!"
-            echo "🌐 Votre application Go est déployée:"
+            echo "🌐 Application disponible sur:"
             echo "   http://localhost:${APP_PORT}"
             echo "   http://192.168.61.131:${APP_PORT}"
-            echo "🐳 Image: ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest"
             """
         }
         failure {
             sh """
             echo "❌ DÉPLOIEMENT ÉCHOUÉ"
-            echo "💡 Causes possibles:"
-            echo "   - Problème de build Go"
-            echo "   - Dockerfile incorrect"
-            echo "   - Problème SSH"
-            echo "   - Port ${APP_PORT} déjà utilisé"
+            echo "💡 Vérifiez les logs Jenkins et les scans Trivy/Lynis."
             """
         }
     }

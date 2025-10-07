@@ -44,16 +44,12 @@ pipeline {
             steps {
                 sh '''
                 echo "🔧 Setting up Go environment..."
-                echo "Go version:"
                 go version
-                echo "Go path:"
                 which go
                 
-                # Créer le workspace Go pour Jenkins
                 mkdir -p /var/lib/jenkins/go
                 chown jenkins:jenkins /var/lib/jenkins/go
                 
-                # Vérifier les permissions
                 echo "Current user:"
                 whoami
                 echo "Workspace:"
@@ -68,7 +64,6 @@ pipeline {
                 sh '''
                 echo "🏗️ Building Go application..."
                 
-                # Vérifier le fichier main.go
                 echo "=== Main Go file ==="
                 cat main.go | head -10
                 
@@ -78,19 +73,28 @@ pipeline {
                     go mod init hello-app
                 fi
                 
-                # Télécharger les dépendances
                 echo "📥 Downloading dependencies..."
+                go mod tidy
                 go mod download || echo "No dependencies or already downloaded"
                 
-                # Build de l'application
                 echo "🔨 Compiling application..."
                 go build -v -o ${APP_NAME} .
                 
-                # Vérification
                 echo "✅ Build completed:"
                 ls -la ${APP_NAME}
                 file ${APP_NAME}
-                ./${APP_NAME} --version 2>/dev/null || ./${APP_NAME} -v 2>/dev/null || echo "Cannot test binary (expected)"
+                
+                echo "🚀 Quick startup test (5s)..."
+                nohup ./${APP_NAME} > app.log 2>&1 &
+                APP_PID=$!
+                sleep 5
+                if curl -s http://localhost:${APP_PORT}/ > /dev/null; then
+                    echo "✅ Application responded on port ${APP_PORT}"
+                else
+                    echo "⚠️ Application did not respond on port ${APP_PORT} (may require run context)"
+                fi
+                kill $APP_PID || true
+                echo "🧹 App test instance stopped"
                 '''
             }
         }
@@ -100,16 +104,11 @@ pipeline {
             steps {
                 sh '''
                 echo "🔍 Running static analysis..."
-                
-                # Vérification de base
-                echo "=== Basic Checks ==="
                 go vet . 2>/dev/null && echo "✅ Go vet passed" || echo "⚠️ Go vet issues"
                 
-                # Vérification compilation
-                echo "=== Compilation ==="
+                echo "=== Compilation check ==="
                 go build -o /tmp/test-build . && echo "✅ Code compiles" || echo "❌ Compilation failed"
                 rm -f /tmp/test-build
-                
                 echo "✅ Static analysis completed"
                 '''
             }
@@ -121,13 +120,10 @@ pipeline {
                 script {
                     sh """
                     echo "🐳 Building Docker image..."
-                    
-                    # Vérifier le Dockerfile
                     echo "=== Dockerfile Content ==="
-                    cat Dockerfile
+                    cat Dockerfile || echo "⚠️ No Dockerfile found"
                     echo "=========================="
                     
-                    # Construction de l'image
                     docker build -t ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} .
                     docker tag ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
                     
@@ -154,16 +150,13 @@ pipeline {
                             set -e
                             echo '🎯 Starting deployment of ${APP_NAME}...'
                             
-                            # Arrêt ancien conteneur
                             echo '⏹️ Stopping existing container...'
                             docker stop ${APP_NAME} 2>/dev/null || true
                             docker rm ${APP_NAME} 2>/dev/null || true
                             
-                            # Nettoyage
                             echo '🧹 Cleaning up...'
                             docker image prune -f 2>/dev/null || true
                             
-                            # Lancement nouveau conteneur (utilise l'image locale)
                             echo '🐳 Starting new container...'
                             docker run -d \\
                               --name ${APP_NAME} \\
@@ -171,14 +164,12 @@ pipeline {
                               --restart unless-stopped \\
                               ${DOCKER_REGISTRY}/${APP_NAME}:latest
                             
-                            # Vérification
                             echo '⏳ Waiting for startup...'
                             sleep 10
                             
                             echo '🔍 Verification:'
                             docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}'
                             
-                            # Test santé
                             if curl -f -s http://localhost:${APP_PORT}/ > /dev/null; then
                                 echo '✅ Health check passed'
                                 echo '🎉 Deployment successful!'

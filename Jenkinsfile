@@ -1,217 +1,242 @@
 pipeline {
-  agent any
-  stages {
-    stage('Checkout Code') {
-      steps {
-        git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token')
-        sh '''
+    agent any
+
+    environment {
+        APP_NAME = 'go-dev-dashboard'
+        DOCKER_REGISTRY = 'yourregistry.com'
+        DEPLOY_SERVER = 'devops@yourserver'
+        SSH_CREDENTIALS_ID = 'jenkins-ssh-key'
+        APP_PORT = '8090'
+        TARGET_URL = "http://yourserver:${APP_PORT}"
+        TRIVY_VERSION = '0.54.1'
+        ZAP_VERSION = '2.15.0'
+    }
+
+    stages {
+
+        // === 1. Checkout Code ===
+        stage('Checkout Code') {
+            steps {
+                git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token')
+                sh '''
                 echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
                 echo "📝 Branch: master"
-                echo "🔍 Files in repository:"
-                ls -la
-                echo "=== Go files ==="
                 find . -name "*.go" -type f
                 '''
-      }
-    }
+            }
+        }
 
-    stage('Setup Go') {
-      steps {
-        sh '''
-                echo "🔧 Setting up Go environment..."
-                echo "Go version:"
-                go version
-                echo "Go path:"
-                which go
-                
-                # Créer le workspace Go pour Jenkins
-                mkdir -p /var/lib/jenkins/go
-                chown jenkins:jenkins /var/lib/jenkins/go
-                
-                # Vérifier les permissions
-                echo "Current user:"
-                whoami
-                echo "Workspace:"
-                pwd
-                '''
-      }
-    }
+        // === 2. Setup Tools ===
+        stage('Setup Environment') {
+            steps {
+                sh '''
+                echo "🔧 Vérification de l'environnement..."
+                go version || echo "⚠️ Go non installé"
+                docker --version || echo "⚠️ Docker non disponible"
 
-    stage('Build Go Application') {
-      steps {
-        sh '''
-                echo "🏗️ Building Go application..."
-                
-                # Vérifier le fichier main.go
-                echo "=== Main Go file ==="
-                cat main.go | head -10
-                
-                # Initialiser go.mod si absent
-                if [ ! -f "go.mod" ]; then
-                    echo "📝 Initializing go.mod..."
-                    go mod init hello-app
+                echo "📥 Installation de Trivy et gosec..."
+                which gosec || go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+                if ! which trivy; then
+                    wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb
+                    sudo dpkg -i trivy_${TRIVY_VERSION}_Linux-64bit.deb
                 fi
-                
-                # Télécharger les dépendances
-                echo "📥 Downloading dependencies..."
-                go mod download || echo "No dependencies or already downloaded"
-                
-                # Build de l\'application
-                echo "🔨 Compiling application..."
+                '''
+            }
+        }
+
+        // === 3. Build Go Application ===
+        stage('Build Go Application') {
+            steps {
+                sh '''
+                echo "🏗️ Construction de l'application Go..."
+                if [ ! -f "go.mod" ]; then go mod init hello-app; fi
+                go mod tidy
                 go build -v -o ${APP_NAME} .
-                
-                # Vérification
-                echo "✅ Build completed:"
-                ls -la ${APP_NAME}
-                file ${APP_NAME}
-                ./${APP_NAME} --version 2>/dev/null || ./${APP_NAME} -v 2>/dev/null || echo "Cannot test binary (expected)"
+                chmod +x ${APP_NAME}
                 '''
-      }
-    }
-
-    stage('Static Analysis') {
-      steps {
-        sh '''
-                echo "🔍 Running static analysis..."
-                
-                # Vérification de base
-                echo "=== Basic Checks ==="
-                go vet . 2>/dev/null && echo "✅ Go vet passed" || echo "⚠️ Go vet issues"
-                
-                # Vérification compilation
-                echo "=== Compilation ==="
-                go build -o /tmp/test-build . && echo "✅ Code compiles" || echo "❌ Compilation failed"
-                rm -f /tmp/test-build
-                
-                echo "✅ Static analysis completed"
-                '''
-      }
-    }
-
-    stage('Build Docker Image') {
-      steps {
-        script {
-          sh """
-          echo "🐳 Building Docker image..."
-
-          # Vérifier le Dockerfile
-          echo "=== Dockerfile Content ==="
-          cat Dockerfile
-          echo "=========================="
-
-          # Construction de l'image
-          docker build -t ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} .
-          docker tag ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
-
-          echo "✅ Docker images created:"
-          docker images | grep ${DOCKER_REGISTRY}
-          """
+            }
         }
 
-      }
-    }
-
-    stage('Deploy to Ubuntu via SSH') {
-      steps {
-        script {
-          withCredentials([sshUserPrivateKey(
-            credentialsId: "${SSH_CREDENTIALS_ID}",
-            usernameVariable: 'SSH_USER',
-            keyFileVariable: 'SSH_KEY'
-          )]) {
-            sh """
-            echo "🚀 Deploying to Ubuntu server..."
-
-            ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
-            set -e
-            echo '🎯 Starting deployment of ${APP_NAME}...'
-
-            # Arrêt ancien conteneur
-            echo '⏹️ Stopping existing container...'
-            docker stop ${APP_NAME} 2>/dev/null || true
-            docker rm ${APP_NAME} 2>/dev/null || true
-
-            # Nettoyage
-            echo '🧹 Cleaning up...'
-            docker image prune -f 2>/dev/null || true
-
-            # Lancement nouveau conteneur (utilise l'image locale)
-            echo '🐳 Starting new container...'
-            docker run -d \\
-            --name ${APP_NAME} \\
-            -p ${APP_PORT}:${APP_PORT} \\
-            --restart unless-stopped \\
-            ${DOCKER_REGISTRY}/${APP_NAME}:latest
-
-            # Vérification
-            echo '⏳ Waiting for startup...'
-            sleep 10
-
-            echo '🔍 Verification:'
-            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}'
-
-            # Test santé
-            if curl -f -s http://localhost:${APP_PORT}/ > /dev/null; then
-            echo '✅ Health check passed'
-            echo '🎉 Deployment successful!'
-            echo '🌐 Application URL: http://localhost:${APP_PORT}'
-            echo '🌐 Network URL: http://192.168.61.131:${APP_PORT}'
-            else
-            echo '⚠️ Health check failed - checking logs...'
-            docker logs ${APP_NAME} --tail 10
-            echo '⚠️ Deployment completed but health check failed'
-            fi
-            "
-            """
-          }
+        // === 4. Static Code Analysis ===
+        stage('Static Analysis (Gosec)') {
+            steps {
+                sh '''
+                echo "🔍 Analyse Statique avec gosec..."
+                mkdir -p security-reports
+                gosec -fmt=html -out=security-reports/gosec-report.html ./... || true
+                go vet ./... > security-reports/govet-output.txt || true
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'security-reports',
+                        reportFiles: 'gosec-report.html',
+                        reportName: 'Analyse Statique - Gosec'
+                    ])
+                }
+            }
         }
 
-      }
-    }
+        // === 5. Unit Tests + Coverage ===
+        stage('Unit Tests & Coverage') {
+            steps {
+                sh '''
+                echo "🧪 Tests unitaires..."
+                mkdir -p test-reports
+                go test -v -coverprofile=test-reports/coverage.out ./... | tee test-reports/test.log
+                go tool cover -html=test-reports/coverage.out -o test-reports/coverage.html
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'test-reports',
+                        reportFiles: 'coverage.html',
+                        reportName: 'Couverture des Tests'
+                    ])
+                }
+            }
+        }
 
-  }
-  environment {
-    APP_NAME = 'go-dev-dashboard'
-    APP_PORT = '8090'
-    DOCKER_REGISTRY = 'laurentmd5'
-    DOCKER_IMAGE = "${APP_NAME}"
-    DOCKER_TAG = "${env.BUILD_NUMBER}"
-    DEPLOY_SERVER = 'devops@localhost'
-    DEPLOY_PATH = '/home/devops/apps'
-    SSH_CREDENTIALS_ID = 'ubuntu-server-ssh'
-    GOPATH = '/var/lib/jenkins/go'
-  }
-  post {
-    always {
-      sh '''
-            echo "🧼 Cleaning up workspace..."
-            docker system prune -f 2>/dev/null || true
-            rm -f ${APP_NAME} 2>/dev/null || true
-            '''
-      archiveArtifacts(artifacts: '${APP_NAME},go.mod,*.go', fingerprint: true)
-    }
+        // === 6. Build Docker Image ===
+        stage('Build Docker Image') {
+            steps {
+                sh '''
+                echo "🐳 Construction de l'image Docker..."
+                docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER} .
+                docker tag ${DOCKER_REGISTRY}/${APP_NAME}:${BUILD_NUMBER} ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                docker images | grep ${APP_NAME}
+                '''
+            }
+        }
 
-    success {
-      sh """
-                  echo ""
-                  echo "✅ DÉPLOIEMENT RÉUSSI!"
-                  echo "🌐 Votre application Go est déployée:"
-                  echo "   http://localhost:${APP_PORT}"
-                  echo "   http://192.168.61.131:${APP_PORT}"
-                  echo "🐳 Image: ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest"
-                  """
-    }
+        // === 7. Trivy Container Scan ===
+        stage('Container Scan (Trivy)') {
+            steps {
+                sh '''
+                echo "🔒 Scan de l'image Docker..."
+                mkdir -p trivy-reports
+                trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'trivy-reports',
+                        reportFiles: 'container-scan.html',
+                        reportName: 'Scan Sécurité - Trivy'
+                    ])
+                }
+            }
+        }
 
-    failure {
-      sh """
-                  echo "❌ DÉPLOIEMENT ÉCHOUÉ"
-                  echo "💡 Causes possibles:"
-                  echo "   - Problème de build Go"
-                  echo "   - Dockerfile incorrect"
-                  echo "   - Problème SSH"
-                  echo "   - Port ${APP_PORT} déjà utilisé"
-                  """
-    }
+        // === 8. Deploy to Remote Server ===
+        stage('Deploy to Ubuntu Server') {
+            steps {
+                script {
+                    withCredentials([sshUserPrivateKey(credentialsId: "${SSH_CREDENTIALS_ID}", keyFileVariable: 'SSH_KEY')]) {
+                        sh """
+                        echo "🚀 Déploiement distant..."
+                        ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
+                            docker stop ${APP_NAME} 2>/dev/null || true
+                            docker rm ${APP_NAME} 2>/dev/null || true
+                            docker run -d --name ${APP_NAME} -p ${APP_PORT}:${APP_PORT} ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                        '
+                        """
+                    }
+                }
+            }
+        }
 
-  }
+        // === 9. OWASP ZAP Dynamic Scan (via Docker) ===
+        stage('OWASP ZAP Scan (Docker)') {
+            steps {
+                sh '''
+                echo "🛡️ Scan OWASP ZAP via Docker..."
+                mkdir -p zap-reports
+
+                docker run --rm -v $(pwd)/zap-reports:/zap/wrk:rw \
+                    owasp/zap2docker-stable zap-baseline.py \
+                    -t ${TARGET_URL} \
+                    -r zap-report.html \
+                    -x zap-report.xml \
+                    -J zap-report.json \
+                    -I -m 10
+
+                echo "✅ Rapport ZAP généré"
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'zap-reports',
+                        reportFiles: 'zap-report.html',
+                        reportName: 'OWASP ZAP - Analyse Dynamique'
+                    ])
+                    archiveArtifacts artifacts: 'zap-reports/*', fingerprint: true
+                }
+            }
+        }
+
+        // === 10. Environment Security Audit (Lynis) ===
+        stage('Environment Audit (Lynis)') {
+            steps {
+                script {
+                    withCredentials([sshUserPrivateKey(credentialsId: "${SSH_CREDENTIALS_ID}", keyFileVariable: 'SSH_KEY')]) {
+                        sh """
+                        echo "🏢 Audit de sécurité de l'environnement..."
+                        ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} '
+                            sudo apt install -y lynis
+                            sudo lynis audit system --quick | tee /tmp/lynis-audit.txt
+                        '
+                        scp -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER}:/tmp/lynis-audit.txt lynis-reports/ || echo 'Aucun rapport Lynis'
+                        """
+                    }
+                }
+            }
+        }
+
+        // === 11. Security Summary ===
+        stage('Security Summary') {
+            steps {
+                sh '''
+                echo "📊 Génération du résumé de sécurité..."
+                mkdir -p security-summary
+                cat > security-summary/report.md <<EOF
+                # Rapport de Sécurité - Build ${BUILD_NUMBER}
+
+                🔐 **Application**: ${APP_NAME}  
+                🌐 **URL**: ${TARGET_URL}  
+                📅 **Date**: $(date)
+
+                **Modules d'analyse exécutés :**
+                - Gosec : ✔️
+                - Trivy : ✔️
+                - OWASP ZAP : ✔️
+                - Lynis : ✔️
+                - Tests unitaires : ✔️
+                EOF
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'security-summary/**', fingerprint: true
+                }
+            }
+        }
+
+    } // end stages
+
+    post {
+        success {
+            echo "🎉 Pipeline DevSecOps terminé avec succès !"
+        }
+        failure {
+            echo "❌ Échec du pipeline - vérifiez les rapports."
+        }
+        always {
+            sh 'docker system prune -f || true'
+        }
+    }
 }

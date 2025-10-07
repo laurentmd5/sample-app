@@ -342,12 +342,12 @@ pipeline {
 
     success {
       sh """
-                  echo ""
-                  echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
-                  echo "Tous les contrôles de sécurité ont passé"
-                  echo "Application déployée sécuritairement"
-                  echo "Accédez à l application: ${TARGET_URL}"
-                  """
+                        echo ""
+                        echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
+                        echo "Tous les contrôles de sécurité ont passé"
+                        echo "Application déployée sécuritairement"
+                        echo "Accédez à l application: ${TARGET_URL}"
+                        """
     }
 
     failure {

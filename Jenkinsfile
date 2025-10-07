@@ -5,7 +5,7 @@ pipeline {
         // Configuration Application
         APP_NAME = 'go-dev-dashboard'
         APP_PORT = '8090'
-        
+    
         // Configuration Docker
         DOCKER_REGISTRY = 'laurentmd5'
         DOCKER_IMAGE = "${APP_NAME}"

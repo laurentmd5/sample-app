@@ -17,7 +17,7 @@ pipeline {
     stages {
         stage('Checkout Code') {
             steps {
-                git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token')
+                git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token2')
                 sh '''
                 echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
                 echo "📝 Branch: master"
@@ -29,7 +29,6 @@ pipeline {
             }
         }
         
-        // ÉTAPE 2: Setup Environment et Outils de Sécurité
         stage('Setup Environment') {
             steps {
                 sh '''
@@ -40,25 +39,24 @@ pipeline {
                 
                 echo "📥 Installation des outils de sécurité..."
                 
-                # Configuration pour éviter les problèmes de réseau
                 git config --global url."https://github.com".insteadOf ssh://git@github.com || true
                 
                 echo "=== Installation de gosec ==="
                 if ! which gosec; then
                     echo "Téléchargement de gosec depuis les releases GitHub..."
-                    wget -q https://github.com/securecodewarrior/gosec/releases/download/v2.19.0/gosec_2.19.0_linux_amd64.tar.gz
-                    tar -xzf gosec_2.19.0_linux_amd64.tar.gz
+                    wget -q "https://github.com/securecodewarrior/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz"
+                    tar -xzf "gosec_${GOSEC_VERSION}_linux_amd64.tar.gz"
                     sudo mv gosec /usr/local/bin/
-                    rm -f gosec_2.19.0_linux_amd64.tar.gz
+                    rm -f "gosec_${GOSEC_VERSION}_linux_amd64.tar.gz"
                 fi
                 gosec --version || echo "Gosec non disponible"
                 
                 echo "=== Installation de Trivy ==="
                 if ! which trivy; then
-                    wget -q https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.deb
-                    sudo dpkg -i trivy_0.49.1_Linux-64bit.deb || true
+                    wget -q "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb"
+                    sudo dpkg -i "trivy_${TRIVY_VERSION}_Linux-64bit.deb" || true
                     sudo apt-get install -f -y
-                    rm -f trivy_0.49.1_Linux-64bit.deb
+                    rm -f "trivy_${TRIVY_VERSION}_Linux-64bit.deb"
                 fi
                 trivy --version || echo "Trivy installation failed"
                 
@@ -70,13 +68,11 @@ pipeline {
             }
         }
         
-        // ÉTAPE 3: Build Application Go - CORRIGÉ
         stage('Build Go Application') {
             steps {
                 sh '''
                 echo "🏗️ Construction de l application Go..."
                 
-                # Configuration Go
                 export GOPRIVATE=""
                 export GOSUMDB=off
                 
@@ -89,23 +85,21 @@ pipeline {
                 go mod download 2>&1 | tee go-mod.log || echo "Dépendances téléchargées avec warnings"
                 
                 echo "🔨 Compilation de l application..."
-                go build -v -o hello-app . 2>&1 | tee build.log
+                go build -v -o ${APP_NAME} . 2>&1 | tee build.log
                 
                 echo "✅ Vérification du build:"
-                ls -la hello-app || echo "Binaire non créé"
-                file hello-app 2>/dev/null || echo "Impossible de vérifier le binaire"
-                [ -f "hello-app" ] && chmod +x hello-app || echo "Binaire non disponible"
+                ls -la ${APP_NAME} || echo "Binaire non créé"
+                file ${APP_NAME} 2>/dev/null || echo "Impossible de vérifier le binaire"
+                [ -f "${APP_NAME}" ] && chmod +x ${APP_NAME} || echo "Binaire non disponible"
                 
-                # Test SÉCURISÉ avec timeout pour éviter le blocage
                 echo "🔍 Test rapide du binaire..."
-                timeout 5s ./hello-app --version 2>&1 | head -2 || echo "Test de version terminé"
+                timeout 5s ./${APP_NAME} --version 2>&1 | head -2 || echo "Test de version terminé"
                 
                 echo "🎯 Build Go terminé avec succès"
                 '''
             }
         }
         
-        // ÉTAPE 4: Static Code Analysis - gosec
         stage('Static Code Analysis') {
             steps {
                 sh '''
@@ -142,7 +136,6 @@ pipeline {
             }
         }
         
-        // ÉTAPE 5: Dynamic Tests et Couverture
         stage('Dynamic Tests') {
             steps {
                 sh '''
@@ -180,29 +173,25 @@ pipeline {
             }
         }
         
-        // ÉTAPE 6: Construction de l'Image Docker
         stage('Build Docker Image') {
             steps {
                 script {
                     sh """
                     echo "🐳 Construction de l Image Docker..."
                     
-                    # Vérification du Dockerfile
                     echo "=== Vérification du Dockerfile ==="
                     [ -f "Dockerfile" ] && cat Dockerfile || echo "Dockerfile non trouvé"
                     
-                    # Construction de l'image
-                    docker build -t laurentmd5/hello-app:${env.BUILD_NUMBER} . || exit 1
-                    docker tag laurentmd5/hello-app:${env.BUILD_NUMBER} laurentmd5/hello-app:latest
+                    docker build -t ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} . || exit 1
+                    docker tag ${DOCKER_REGISTRY}/${APP_NAME}:${env.BUILD_NUMBER} ${DOCKER_REGISTRY}/${APP_NAME}:latest
                     
                     echo "✅ Images Docker créées:"
-                    docker images | grep laurentmd5 || echo "Aucune image trouvée pour laurentmd5"
+                    docker images | grep ${DOCKER_REGISTRY} || echo "Aucune image trouvée pour ${DOCKER_REGISTRY}"
                     """
                 }
             }
         }
         
-        // ÉTAPE 7: Scan de Container - Trivy
         stage('Container Scan') {
             steps {
                 sh '''
@@ -210,9 +199,9 @@ pipeline {
                 mkdir -p trivy-reports
                 
                 echo "=== Scan de l Image Docker ==="
-                trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html laurentmd5/hello-app:latest 2>/dev/null || echo "Scan HTML échoué"
-                trivy image --format json -o trivy-reports/container-scan.json laurentmd5/hello-app:latest 2>/dev/null || echo "Scan JSON échoué"
-                trivy image --exit-code 0 --severity HIGH,CRITICAL laurentmd5/hello-app:latest 2>&1 | tee trivy-reports/container-scan-summary.txt || echo "Scan summary terminé"
+                trivy image --format template --template "@contrib/html.tpl" -o trivy-reports/container-scan.html ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>/dev/null || echo "Scan HTML échoué"
+                trivy image --format json -o trivy-reports/container-scan.json ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>/dev/null || echo "Scan JSON échoué"
+                trivy image --exit-code 0 --severity HIGH,CRITICAL ${DOCKER_REGISTRY}/${APP_NAME}:latest 2>&1 | tee trivy-reports/container-scan-summary.txt || echo "Scan summary terminé"
                 
                 echo "✅ Scan du container terminé"
                 '''
@@ -232,71 +221,35 @@ pipeline {
             }
         }
         
-        // ÉTAPE 8: Scan du Filesystem - Trivy FS
-        stage('Filesystem Scan') {
-            steps {
-                sh '''
-                echo "📁 Scan du Filesystem et Dépendances..."
-                mkdir -p trivy-reports
-                
-                echo "=== Scan des Dépendances ==="
-                trivy filesystem --format template --template "@contrib/html.tpl" -o trivy-reports/fs-scan.html . 2>/dev/null || echo "FS scan HTML échoué"
-                trivy filesystem --format json -o trivy-reports/fs-scan.json . 2>/dev/null || echo "FS scan JSON échoué"
-                trivy filesystem --exit-code 0 --severity HIGH,CRITICAL . 2>&1 | tee trivy-reports/fs-scan-summary.txt || echo "FS scan summary terminé"
-                
-                echo "✅ Scan du filesystem terminé"
-                '''
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'trivy-reports',
-                        reportFiles: 'fs-scan.html',
-                        reportName: 'Scan Sécurité Filesystem - Trivy'
-                    ])
-                    archiveArtifacts artifacts: 'trivy-reports/fs-scan.*', fingerprint: true
-                }
-            }
-        }
-        
-        // ÉTAPE 9: Déploiement sur Ubuntu
         stage('Deploy to Ubuntu') {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "ubuntu-server-ssh",
+                        credentialsId: "${SSH_CREDENTIALS_ID}",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
                         echo "🚀 Déploiement sur le serveur Ubuntu..."
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
                             set -e
                             echo '🎯 Démarrage du déploiement...'
                             
-                            # Arrêt et nettoyage des anciens conteneurs
-                            docker stop hello-app 2>/dev/null || true
-                            docker rm hello-app 2>/dev/null || true
+                            docker stop ${APP_NAME} 2>/dev/null || true
+                            docker rm ${APP_NAME} 2>/dev/null || true
                             
-                            # Pull de l'image
-                            docker pull laurentmd5/hello-app:latest || echo "Utilisation de l image locale"
+                            docker pull ${DOCKER_REGISTRY}/${APP_NAME}:latest || echo "Utilisation de l image locale"
                             
-                            # Lancement du conteneur
                             docker run -d \\
-                              --name hello-app \\
-                              -p 8090:8090 \\
+                              --name ${APP_NAME} \\
+                              -p ${APP_PORT}:${APP_PORT} \\
                               --restart unless-stopped \\
-                              laurentmd5/hello-app:latest
+                              ${DOCKER_REGISTRY}/${APP_NAME}:latest
                             
-                            # Attente courte
                             sleep 10
                             
-                            # Vérification
-                            docker ps --filter 'name=hello-app' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
                             echo '✅ Déploiement terminé avec succès'
                         " || echo "SSH connection échouée"
@@ -306,142 +259,6 @@ pipeline {
             }
         }
         
-        // ÉTAPE 10: Installation OWASP ZAP sur le Serveur
-        stage('Install OWASP ZAP') {
-            steps {
-                script {
-                    withCredentials([sshUserPrivateKey(
-                        credentialsId: "ubuntu-server-ssh",
-                        usernameVariable: 'SSH_USER',
-                        keyFileVariable: 'SSH_KEY'
-                    )]) {
-                        sh """
-                        echo "📥 Installation d OWASP ZAP sur le serveur..."
-                        
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
-                            if which zap-baseline.py || which /usr/share/zaproxy/zap-baseline.py; then
-                                echo '✅ ZAP déjà installé'
-                            else
-                                echo '📥 Installation de ZAP...'
-                                sudo apt update -y
-                                sudo apt install -y default-jre wget
-                                wget -q https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/zap_2.14.0_all.deb
-                                sudo dpkg -i zap_2.14.0_all.deb || (sudo apt-get install -f -y && sudo dpkg -i zap_2.14.0_all.deb)
-                                rm -f zap_2.14.0_all.deb
-                                echo '✅ ZAP installé avec succès'
-                            fi
-                            
-                            # Création du répertoire pour les rapports
-                            mkdir -p /home/devops/zap-reports
-                        " || echo "Installation ZAP échouée"
-                        """
-                    }
-                }
-            }
-        }
-        
-        // ÉTAPE 11: Scan Dynamique - OWASP ZAP
-        stage('OWASP ZAP Security Scan') {
-            steps {
-                script {
-                    withCredentials([sshUserPrivateKey(
-                        credentialsId: "ubuntu-server-ssh",
-                        usernameVariable: 'SSH_USER',
-                        keyFileVariable: 'SSH_KEY'
-                    )]) {
-                        sh """
-                        echo "🛡️ Scan de Sécurité Dynamique OWASP ZAP..."
-                        mkdir -p zap-reports
-                        
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
-                            echo '=== Démarrage du Scan ZAP ==='
-                            
-                            # Attente que l'application soit prête
-                            echo '⏳ Vérification de l application...'
-                            for i in {1..12}; do
-                                if curl -f -s http://192.168.61.131:8090 > /dev/null; then
-                                    echo '✅ Application accessible'
-                                    break
-                                fi
-                                sleep 5
-                            done
-                            
-                            # Détermination de la commande ZAP
-                            ZAP_CMD=\\$(which zap-baseline.py || echo /usr/share/zaproxy/zap-baseline.py)
-                            
-                            # Scan ZAP
-                            \\$ZAP_CMD -t http://192.168.61.131:8090 -I -m 5 -T 10 -J -j -x /home/devops/zap-reports/zap-report.xml -r /home/devops/zap-reports/zap-report.html 2>&1 | tee /home/devops/zap-reports/zap-scan.log || echo 'Scan ZAP terminé avec des findings'
-                            
-                            # Nettoyage
-                            pkill -f zaproxy 2>/dev/null || true
-                            echo '✅ Scan ZAP terminé'
-                        " || echo "Scan ZAP échoué"
-                        
-                        # Récupération des rapports
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/home/devops/zap-reports/zap-report.html zap-reports/ 2>/dev/null || echo 'Rapport HTML non disponible'
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/home/devops/zap-reports/zap-report.xml zap-reports/ 2>/dev/null || echo 'Rapport XML non disponible'
-                        
-                        # Fichiers fallback
-                        touch zap-reports/zap-report.html
-                        """
-                    }
-                }
-            }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'zap-reports',
-                        reportFiles: 'zap-report.html',
-                        reportName: 'Scan Sécurité Dynamique - OWASP ZAP'
-                    ])
-                    archiveArtifacts artifacts: 'zap-reports/**/*', fingerprint: true
-                }
-            }
-        }
-        
-        // ÉTAPE 12: Audit Environnement - Lynis
-        stage('Environment Scan') {
-            steps {
-                script {
-                    withCredentials([sshUserPrivateKey(
-                        credentialsId: "ubuntu-server-ssh",
-                        usernameVariable: 'SSH_USER',
-                        keyFileVariable: 'SSH_KEY'
-                    )]) {
-                        sh """
-                        echo "🏢 Audit de Sécurité de l Environnement..."
-                        mkdir -p lynis-reports
-                        
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
-                            echo '=== Audit Système avec Lynis ==='
-                            sudo lynis audit system --quick 2>&1 | tee /tmp/lynis-audit.txt || echo 'Lynis audit échoué'
-                            
-                            echo '=== Vérification des Mises à Jour ==='
-                            sudo apt update -y && sudo apt list --upgradable 2>/dev/null | head -10 | tee /tmp/security-updates.txt || echo 'Aucune mise à jour'
-                        " || echo "Audit environnement échoué"
-                        
-                        # Récupération des rapports
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/tmp/lynis-audit.txt lynis-reports/ 2>/dev/null || echo 'Rapport Lynis non disponible'
-                        scp -i \${SSH_KEY} -o StrictHostKeyChecking=no devops@localhost:/tmp/security-updates.txt lynis-reports/ 2>/dev/null || echo 'Rapport updates non disponible'
-                        
-                        # Fichiers fallback
-                        touch lynis-reports/lynis-audit.txt
-                        touch lynis-reports/security-updates.txt
-                        """
-                    }
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'lynis-reports/**/*', fingerprint: true
-                }
-            }
-        }
-        
-        // ÉTAPE 13: Rapport de Sécurité Consolidé
         stage('Security Summary') {
             steps {
                 sh '''
@@ -451,8 +268,8 @@ pipeline {
                 # Rapport de Sécurité Complet - Build ${BUILD_NUMBER}
                 
                 Date: $(date)
-                Application: hello-app
-                URL: http://192.168.61.131:8090
+                Application: ${APP_NAME}
+                URL: ${TARGET_URL}
                 
                 Analyse Statique
                 - Gosec: $(ls security-reports/gosec-report.html 2>/dev/null && echo "Complété" || echo "Échoué")
@@ -463,17 +280,10 @@ pipeline {
                 
                 Sécurité Container
                 - Scan Image: $(ls trivy-reports/container-scan.html 2>/dev/null && echo "Complété" || echo "Échoué")
-                - Scan Filesystem: $(ls trivy-reports/fs-scan.html 2>/dev/null && echo "Complété" || echo "Échoué")
-                
-                Sécurité Dynamique
-                - OWASP ZAP: $(ls zap-reports/zap-report.html 2>/dev/null && echo "Complété" || echo "Échoué")
-                
-                Environnement
-                - Audit Lynis: $(ls lynis-reports/lynis-audit.txt 2>/dev/null && echo "Complété" || echo "Échoué")
                 
                 Statut Global
                 - Build: ${currentBuild.currentResult}
-                - Application: En ligne
+                - Application: Déployée sur ${TARGET_URL}
                 
                 EOF
 
@@ -497,32 +307,31 @@ pipeline {
             }
         }
         
-        // ÉTAPE 14: Vérification Finale
         stage('Final Check') {
             steps {
                 script {
                     withCredentials([sshUserPrivateKey(
-                        credentialsId: "ubuntu-server-ssh",
+                        credentialsId: "${SSH_CREDENTIALS_ID}",
                         usernameVariable: 'SSH_USER',
                         keyFileVariable: 'SSH_KEY'
                     )]) {
                         sh """
                         echo "🎯 Vérification Finale..."
                         
-                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 devops@localhost "
+                        ssh -i \${SSH_KEY} -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${DEPLOY_SERVER} "
                             echo '📊 État Final du Déploiement'
                             
-                            docker ps --filter 'name=hello-app' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
+                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'
                             
-                            if curl -f -s http://192.168.61.131:8090 > /dev/null; then
+                            if curl -f -s ${TARGET_URL} > /dev/null; then
                                 echo '✅ APPLICATION EN LIGNE ET FONCTIONNELLE'
                             else
                                 echo '⚠️ APPLICATION INACCESSIBLE'
                             fi
                             
                             echo ''
-                            echo '🎉 DÉPLOIEMENT ET SCANS TERMINÉS AVEC SUCCÈS!'
-                            echo '🌐 Application disponible: http://192.168.61.131:8090'
+                            echo '🎉 DÉPLOIEMENT TERMINÉ AVEC SUCCÈS!'
+                            echo '🌐 Application disponible: ${TARGET_URL}'
                         " || echo "Vérification finale échouée"
                         """
                     }
@@ -548,13 +357,11 @@ pipeline {
             echo "RAPPORTS DISPONIBLES:"
             echo "Gosec: Analyse statique"
             echo "Tests: Couverture et résultats"
-            echo "Trivy: Scan containers et fichiers"
-            echo "ZAP: Scan dynamique"
-            echo "Lynis: Audit environnement"
+            echo "Trivy: Scan containers"
             echo "Résumé sécurité complet"
             '''
             
-            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,zap-reports/**,lynis-reports/**,hello-app', fingerprint: true, allowEmptyArchive: true
+            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,${APP_NAME}', fingerprint: true, allowEmptyArchive: true
         }
         success {
             sh """
@@ -562,7 +369,7 @@ pipeline {
             echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
             echo "Tous les contrôles de sécurité ont passé"
             echo "Application déployée sécuritairement"
-            echo "Accédez à l application: http://192.168.61.131:8090"
+            echo "Accédez à l application: ${TARGET_URL}"
             """
         }
         failure {

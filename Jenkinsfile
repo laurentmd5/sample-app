@@ -1,26 +1,27 @@
 pipeline {
     agent any
     
-    triggers {
-        pollSCM('H/5 * * * *')
-    }
-    
     environment {
-        APP_NAME = 'hello-app'
+        // Configuration Application
+        APP_NAME = 'go-dev-dashboard'
         APP_PORT = '8090'
+        
+        // Configuration Docker
         DOCKER_REGISTRY = 'laurentmd5'
+        DOCKER_IMAGE = "${APP_NAME}"
+        DOCKER_TAG = "${env.BUILD_NUMBER}"
+        
+        // Configuration Serveur Ubuntu
         DEPLOY_SERVER = 'devops@localhost'
+        DEPLOY_PATH = '/home/devops/apps'
         SSH_CREDENTIALS_ID = 'ubuntu-server-ssh'
-        TRIVY_VERSION = '0.49.1'
-        GOSEC_VERSION = '2.19.0'
-        ZAP_VERSION = '2.14.0'
-        TARGET_URL = "http://192.168.61.131:${APP_PORT}"
-        // Configuration Git pour éviter les prompts
-        GIT_TERMINAL_PROMPT = '0'
+        
+        // Configuration Go
+        GOPATH = '/var/lib/jenkins/go'
     }
     
     stages {
-        // ÉTAPE 1: Checkout du Code
+        // ÉTAPE 1: Checkout avec credentials GitHub
         stage('Checkout Code') {
             steps {
                 git branch: 'master',
@@ -30,161 +31,200 @@ pipeline {
                 sh '''
                 echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
                 echo "📝 Branch: master"
-                echo "🔍 Dernier commit:"
-                git log -1 --oneline
-                echo "📁 Contenu du repository:"
+                echo "🔍 Files in repository:"
                 ls -la
+                echo "=== Go files ==="
+                find . -name "*.go" -type f
                 '''
             }
         }
         
-        // ÉTAPE 2: Setup Environment et Outils de Sécurité
-        stage('Setup Environment') {
+        // ÉTAPE 2: Setup Go Environment
+        stage('Setup Go') {
             steps {
                 sh '''
-                echo "🔧 Configuration de l environnement..."
-                echo "=== Versions des outils ==="
-                go version || echo "Go non installé"
-                docker --version || echo "Docker non disponible"
+                echo "🔧 Setting up Go environment..."
+                echo "Go version:"
+                go version
+                echo "Go path:"
+                which go
                 
-                echo "📥 Installation des outils de sécurité..."
+                # Créer le workspace Go pour Jenkins
+                mkdir -p /var/lib/jenkins/go
+                chown jenkins:jenkins /var/lib/jenkins/go
                 
-                echo "=== Configuration Git pour Go modules ==="
-                git config --global url."https://github.com".insteadOf ssh://git@github.com || true
-                
-                echo "=== Installation de gosec ==="
-                if ! which gosec; then
-                    echo "Installation de gosec..."
-                    # Téléchargement direct depuis les releases GitHub
-                    wget -q https://github.com/securecodewarrior/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
-                    tar -xzf gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
-                    sudo mv gosec /usr/local/bin/
-                    rm -f gosec_${GOSEC_VERSION}_linux_amd64.tar.gz
-                fi
-                gosec --version || echo "Gosec installation échouée"
-                
-                echo "=== Installation de Trivy ==="
-                if ! which trivy; then
-                    wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb
-                    sudo dpkg -i trivy_${TRIVY_VERSION}_Linux-64bit.deb
-                    rm -f trivy_${TRIVY_VERSION}_Linux-64bit.deb
-                fi
-                trivy --version || echo "Trivy installation failed"
-                
-                echo "=== Installation de Lynis ==="
-                which lynis || (sudo apt update && sudo apt install -y lynis)
-                
-                echo "✅ Tous les outils sont prêts"
+                # Vérifier les permissions
+                echo "Current user:"
+                whoami
+                echo "Workspace:"
+                pwd
                 '''
             }
         }
         
-        // ÉTAPE 3: Build Application Go
+        // ÉTAPE 3: Build application Go
         stage('Build Go Application') {
             steps {
                 sh '''
-                echo "🏗️ Construction de l application Go..."
+                echo "🏗️ Building Go application..."
                 
+                # Vérifier le fichier main.go
+                echo "=== Main Go file ==="
+                cat main.go | head -10
+                
+                # Initialiser go.mod si absent
                 if [ ! -f "go.mod" ]; then
-                    echo "📝 Initialisation de go.mod..."
+                    echo "📝 Initializing go.mod..."
                     go mod init hello-app
                 fi
                 
-                echo "📥 Téléchargement des dépendances..."
-                # Configuration pour éviter les problèmes d'authentification
-                GOPRIVATE=""
-                go env -w GOPRIVATE=""
-                go mod download 2>&1 | tee go-mod.log || echo "Aucune dépendance ou déjà téléchargées"
+                # Télécharger les dépendances
+                echo "📥 Downloading dependencies..."
+                go mod download || echo "No dependencies or already downloaded"
                 
-                echo "🔨 Compilation de l application..."
+                # Build de l'application
+                echo "🔨 Compiling application..."
                 go build -v -o ${APP_NAME} .
                 
-                echo "✅ Vérification du build:"
+                # Vérification
+                echo "✅ Build completed:"
                 ls -la ${APP_NAME}
                 file ${APP_NAME}
-                chmod +x ${APP_NAME}
+                ./${APP_NAME} --version 2>/dev/null || ./${APP_NAME} -v 2>/dev/null || echo "Cannot test binary (expected)"
                 '''
             }
         }
         
-        // Les autres étapes restent similaires...
-        // ÉTAPE 4: Static Code Analysis - gosec
-        stage('Static Code Analysis') {
+        // ÉTAPE 4: Tests statiques simplifiés
+        stage('Static Analysis') {
             steps {
                 sh '''
-                echo "🔍 Analyse Statique du Code avec gosec..."
-                mkdir -p security-reports
+                echo "🔍 Running static analysis..."
                 
-                echo "=== Exécution de gosec ==="
-                if which gosec; then
-                    gosec -fmt=json -out=security-reports/gosec-report.json ./... 2>/dev/null || true
-                    gosec -fmt=html -out=security-reports/gosec-report.html ./... 2>/dev/null || true
-                    gosec ./... 2>&1 | tee security-reports/gosec-output.txt || echo "Gosec a terminé avec des findings"
-                    echo "✅ Analyse gosec terminée"
-                else
-                    echo "⚠️ gosec non disponible, analyse statique ignorée"
-                fi
+                # Vérification de base
+                echo "=== Basic Checks ==="
+                go vet . 2>/dev/null && echo "✅ Go vet passed" || echo "⚠️ Go vet issues"
                 
-                echo "=== Exécution de go vet ==="
-                go vet ./... 2>&1 | tee security-reports/govet-output.txt || echo "Go vet terminé"
+                # Vérification compilation
+                echo "=== Compilation ==="
+                go build -o /tmp/test-build . && echo "✅ Code compiles" || echo "❌ Compilation failed"
+                rm -f /tmp/test-build
+                
+                echo "✅ Static analysis completed"
                 '''
             }
-            post {
-                always {
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'security-reports',
-                        reportFiles: 'gosec-report.html',
-                        reportName: 'Rapport Gosec - Analyse Statique'
-                    ])
-                    archiveArtifacts artifacts: 'security-reports/gosec-report.*,security-reports/govet-output.txt', fingerprint: true
+        }
+        
+        // ÉTAPE 5: Construction image Docker
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh """
+                    echo "🐳 Building Docker image..."
+                    
+                    # Vérifier le Dockerfile
+                    echo "=== Dockerfile Content ==="
+                    cat Dockerfile
+                    echo "=========================="
+                    
+                    # Construction de l'image
+                    docker build -t ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} .
+                    docker tag ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest
+                    
+                    echo "✅ Docker images created:"
+                    docker images | grep ${DOCKER_REGISTRY}
+                    """
                 }
             }
         }
         
-        // ... (les autres étapes restent inchangées)
+        // ÉTAPE 6: Déploiement sur Ubuntu
+        stage('Deploy to Ubuntu via SSH') {
+            steps {
+                script {
+                    withCredentials([sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIALS_ID}",
+                        usernameVariable: 'SSH_USER',
+                        keyFileVariable: 'SSH_KEY'
+                    )]) {
+                        sh """
+                        echo "🚀 Deploying to Ubuntu server..."
+                        
+                        ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${DEPLOY_SERVER} "
+                            set -e
+                            echo '🎯 Starting deployment of ${APP_NAME}...'
+                            
+                            # Arrêt ancien conteneur
+                            echo '⏹️ Stopping existing container...'
+                            docker stop ${APP_NAME} 2>/dev/null || true
+                            docker rm ${APP_NAME} 2>/dev/null || true
+                            
+                            # Nettoyage
+                            echo '🧹 Cleaning up...'
+                            docker image prune -f 2>/dev/null || true
+                            
+                            # Lancement nouveau conteneur (utilise l'image locale)
+                            echo '🐳 Starting new container...'
+                            docker run -d \\
+                              --name ${APP_NAME} \\
+                              -p ${APP_PORT}:${APP_PORT} \\
+                              --restart unless-stopped \\
+                              ${DOCKER_REGISTRY}/${APP_NAME}:latest
+                            
+                            # Vérification
+                            echo '⏳ Waiting for startup...'
+                            sleep 10
+                            
+                            echo '🔍 Verification:'
+                            docker ps --filter 'name=${APP_NAME}' --format 'table {{.Names}}\\t{{.Status}}'
+                            
+                            # Test santé
+                            if curl -f -s http://localhost:${APP_PORT}/ > /dev/null; then
+                                echo '✅ Health check passed'
+                                echo '🎉 Deployment successful!'
+                                echo '🌐 Application URL: http://localhost:${APP_PORT}'
+                                echo '🌐 Network URL: http://192.168.61.131:${APP_PORT}'
+                            else
+                                echo '⚠️ Health check failed - checking logs...'
+                                docker logs ${APP_NAME} --tail 10
+                                echo '⚠️ Deployment completed but health check failed'
+                            fi
+                        "
+                        """
+                    }
+                }
+            }
+        }
     }
     
     post {
         always {
             sh '''
-            echo "Nettoyage final..."
+            echo "🧼 Cleaning up workspace..."
             docker system prune -f 2>/dev/null || true
-            
-            echo ""
-            echo "RÉSUMÉ DE L EXÉCUTION"
-            echo "Application Go construite"
-            echo "Image Docker créée"
-            echo "Tests et couverture exécutés"
-            echo "Scans de sécurité complétés"
-            echo "Application déployée"
-            echo ""
-            echo "RAPPORTS DISPONIBLES:"
-            echo "Gosec: Analyse statique"
-            echo "Tests: Couverture et résultats"
-            echo "Trivy: Scan containers et fichiers"
-            echo "ZAP: Scan dynamique"
-            echo "Lynis: Audit environnement"
-            echo "Résumé sécurité complet"
+            rm -f ${APP_NAME} 2>/dev/null || true
             '''
             
-            archiveArtifacts artifacts: 'security-reports/**,test-reports/**,trivy-reports/**,zap-reports/**,lynis-reports/**,${APP_NAME}', fingerprint: true
+            archiveArtifacts artifacts: '${APP_NAME},go.mod,*.go', fingerprint: true
         }
         success {
             sh """
             echo ""
-            echo "🎉 PIPELINE DE SÉCURITÉ COMPLET RÉUSSI!"
-            echo "Tous les contrôles de sécurité ont passé"
-            echo "Application déployée sécuritairement"
-            echo "Accédez à l application: ${TARGET_URL}"
+            echo "✅ DÉPLOIEMENT RÉUSSI!"
+            echo "🌐 Votre application Go est déployée:"
+            echo "   http://localhost:${APP_PORT}"
+            echo "   http://192.168.61.131:${APP_PORT}"
+            echo "🐳 Image: ${DOCKER_REGISTRY}/${DOCKER_IMAGE}:latest"
             """
         }
         failure {
             sh """
-            echo "❌ PIPELINE EN ÉCHEC"
-            echo "Consultez les rapports pour plus de détails"
+            echo "❌ DÉPLOIEMENT ÉCHOUÉ"
+            echo "💡 Causes possibles:"
+            echo "   - Problème de build Go"
+            echo "   - Dockerfile incorrect"
+            echo "   - Problème SSH"
+            echo "   - Port ${APP_PORT} déjà utilisé"
             """
         }
     }

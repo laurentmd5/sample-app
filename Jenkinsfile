@@ -1,18 +1,9 @@
 pipeline {
   agent any
-
-  environment {
-    DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')
-    SSH_KEY = credentials('ssh-key')
-  }
-
   stages {
     stage('Checkout Code') {
       steps {
-        git branch: 'master',
-            url: 'https://github.com/laurentmd5/sample-app.git',
-            credentialsId: 'github-token2'
-
+        git(branch: 'master', url: 'https://github.com/laurentmd5/sample-app.git', credentialsId: 'github-token2')
         sh '''
           echo "📦 Repository: https://github.com/laurentmd5/sample-app.git"
           echo "📝 Branch: master"
@@ -64,14 +55,20 @@ pipeline {
         '''
       }
     }
-  }
 
+  }
+  environment {
+    DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')
+    SSH_KEY = credentials('ssh-key')
+  }
   post {
     success {
-      echo "🎉 Pipeline completed successfully!"
+      echo '🎉 Pipeline completed successfully!'
     }
+
     failure {
-      echo "❌ Pipeline failed. Check logs for errors."
+      echo '❌ Pipeline failed. Check logs for errors.'
     }
+
   }
 }

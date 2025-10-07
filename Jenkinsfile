@@ -15,7 +15,7 @@ pipeline {
         GOPATH = "/tmp/go"
         PATH = "/tmp/go/bin:${env.PATH}"
     }
-    
+
     stages {
         stage('Checkout Code') {
             steps {
